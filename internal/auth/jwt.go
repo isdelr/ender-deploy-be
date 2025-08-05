@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -59,24 +60,41 @@ func ValidateJWT(tokenStr string) (*Claims, error) {
 func JWTMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			cookie, err := r.Cookie("token")
-			if err != nil {
-				if err == http.ErrNoCookie {
+			var tokenStr string
+
+			// 1. Try to get the token from the Authorization header
+			authHeader := r.Header.Get("Authorization")
+			if authHeader != "" {
+				parts := strings.Split(authHeader, "Bearer ")
+				if len(parts) == 2 {
+					tokenStr = parts[1]
+				}
+			}
+
+			// 2. If not in header, fall back to the cookie
+			if tokenStr == "" {
+				cookie, err := r.Cookie("token")
+				if err != nil {
 					http.Error(w, "Missing auth token", http.StatusUnauthorized)
 					return
 				}
-				http.Error(w, "Bad request", http.StatusBadRequest)
+				tokenStr = cookie.Value
+			}
+
+			// 3. If we still have no token, fail
+			if tokenStr == "" {
+				http.Error(w, "Missing auth token", http.StatusUnauthorized)
 				return
 			}
 
-			tokenStr := cookie.Value
+			// 4. Validate the token
 			claims, err := ValidateJWT(tokenStr)
 			if err != nil {
 				http.Error(w, "Invalid auth token", http.StatusUnauthorized)
 				return
 			}
 
-			// Pass claims down to the next handler via context
+			// 5. Pass claims down via context
 			ctx := context.WithValue(r.Context(), UserClaimsKey, claims)
 			fmt.Printf("Authenticated user: %s (ID: %s)\n", claims.Username, claims.UserID)
 			next.ServeHTTP(w, r.WithContext(ctx))
