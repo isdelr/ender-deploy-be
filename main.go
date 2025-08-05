@@ -14,6 +14,7 @@ import (
 	"github.com/isdelr/ender-deploy-be/internal/config"
 	"github.com/isdelr/ender-deploy-be/internal/database"
 	"github.com/isdelr/ender-deploy-be/internal/docker"
+	"github.com/isdelr/ender-deploy-be/internal/monitoring"
 	"github.com/isdelr/ender-deploy-be/internal/services"
 	"github.com/isdelr/ender-deploy-be/internal/websocket"
 )
@@ -28,6 +29,11 @@ func main() {
 	// Ensure the base directory for server data exists
 	if err := os.MkdirAll(cfg.ServerDataBase, 0755); err != nil {
 		log.Fatalf("Failed to create base server data directory: %v", err)
+	}
+
+	// Ensure the base directory for backups exists
+	if err := os.MkdirAll(cfg.BackupPath, 0755); err != nil {
+		log.Fatalf("Failed to create base backup directory: %v", err)
 	}
 
 	// Set up database
@@ -52,11 +58,23 @@ func main() {
 	go hub.Run()
 
 	// Set up services
-	// In a real app, you would have separate services for users, templates, etc.
-	serverService := services.NewServerService(db, dockerClient, hub, cfg.ServerDataBase)
+	templateService := services.NewTemplateService(db)
+	userService := services.NewUserService(db)
+	eventService := services.NewEventService(db)
+	serverService := services.NewServerService(db, dockerClient, hub, templateService, eventService, cfg.ServerDataBase)
+	backupService := services.NewBackupService(db, serverService, eventService, cfg.BackupPath)
+	scheduleService := services.NewScheduleService(db, eventService)
+
+	// Set up and run the background stats updater
+	statUpdater := monitoring.NewStatUpdater(db, dockerClient, serverService, eventService)
+	go statUpdater.Run()
+
+	// Set up and run the background scheduler
+	scheduler := monitoring.NewScheduler(scheduleService, serverService, backupService, eventService)
+	go scheduler.Run()
 
 	// Set up router
-	router := api.NewRouter(hub, serverService)
+	router := api.NewRouter(hub, serverService, templateService, userService, backupService, eventService, scheduleService)
 
 	// Set up server
 	srv := &http.Server{
@@ -76,6 +94,9 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutting down server...")
+
+	statUpdater.Stop() // Stop the monitoring service
+	scheduler.Stop()   // Stop the scheduler
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

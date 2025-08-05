@@ -22,16 +22,27 @@ type Client struct {
 	conn *websocket.Conn
 
 	// Buffered channel of outbound messages.
-	send chan []byte
+	Send chan []byte
+
+	// The server ID this client is subscribed to.
+	ServerID string
 }
 
 // NewClient creates a new client.
-func NewClient(hub *Hub, conn *websocket.Conn) *Client {
-	return &Client{hub: hub, conn: conn, send: make(chan []byte, 256)}
+func NewClient(hub *Hub, conn *websocket.Conn, serverID string) *Client {
+	return &Client{
+		hub:      hub,
+		conn:     conn,
+		Send:     make(chan []byte, 256),
+		ServerID: serverID,
+	}
 }
 
-// ReadPump pumps messages from the websocket connection to the hub.
-func (c *Client) ReadPump() {
+// MessageHandler defines the function signature for processing client messages.
+type MessageHandler func(client *Client, message []byte)
+
+// ReadPump pumps messages from the websocket connection to be processed by the handler.
+func (c *Client) ReadPump(handler MessageHandler) {
 	defer func() {
 		c.hub.Unregister <- c
 		c.conn.Close()
@@ -47,11 +58,8 @@ func (c *Client) ReadPump() {
 			}
 			break
 		}
-		// Here, you would process the message. For example, if it's a console command,
-		// you would pass it to the appropriate service to execute.
-		// For now, we just broadcast it back out.
-		log.Printf("Received message from client: %s", message)
-		// c.hub.broadcast <- message
+		// Pass the message to the handler function provided by the caller
+		handler(c, message)
 	}
 }
 
@@ -64,7 +72,7 @@ func (c *Client) WritePump() {
 	}()
 	for {
 		select {
-		case message, ok := <-c.send:
+		case message, ok := <-c.Send:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				// The hub closed the channel.
@@ -77,6 +85,13 @@ func (c *Client) WritePump() {
 				return
 			}
 			w.Write(message)
+
+			// Add queued chat messages to the current websocket message.
+			n := len(c.Send)
+			for i := 0; i < n; i++ {
+				w.Write([]byte{'\n'})
+				w.Write(<-c.Send)
+			}
 
 			if err := w.Close(); err != nil {
 				return

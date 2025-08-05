@@ -10,6 +10,8 @@ type Config struct {
 	ServerPort     int
 	DatabasePath   string
 	ServerDataBase string // Base path for server files
+	BackupPath     string // Base path for backup files
+	JWTSecret      string
 }
 
 // Load loads configuration from environment variables or sets defaults.
@@ -24,6 +26,8 @@ func Load() (*Config, error) {
 		ServerPort:     port,
 		DatabasePath:   getEnv("DATABASE_PATH", "./ender.db"),
 		ServerDataBase: getEnv("SERVER_DATA_BASE", "./server-data"),
+		BackupPath:     getEnv("BACKUP_PATH", "./backups"),
+		JWTSecret:      getEnv("JWT_SECRET", "a-very-secret-key-that-should-be-changed"),
 	}, nil
 }
 
