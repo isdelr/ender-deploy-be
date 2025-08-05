@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/isdelr/ender-deploy-be/internal/models"
 	"github.com/isdelr/ender-deploy-be/internal/services"
+	"github.com/rs/zerolog/log"
 )
 
 // ScheduleHandler handles HTTP requests related to server schedules.
@@ -25,6 +26,7 @@ func (h *ScheduleHandler) GetAllForServer(w http.ResponseWriter, r *http.Request
 	serverID := chi.URLParam(r, "id")
 	schedules, err := h.service.GetSchedulesForServer(serverID)
 	if err != nil {
+		log.Error().Err(err).Str("server_id", serverID).Msg("Failed to retrieve schedules for server")
 		http.Error(w, "Failed to retrieve schedules: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -47,6 +49,7 @@ func (h *ScheduleHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	newSchedule, err := h.service.CreateSchedule(schedule)
 	if err != nil {
+		log.Error().Err(err).Str("server_id", serverID).Msg("Failed to create schedule")
 		http.Error(w, "Failed to create schedule: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -67,6 +70,7 @@ func (h *ScheduleHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	updatedSchedule, err := h.service.UpdateSchedule(scheduleID, schedule)
 	if err != nil {
+		log.Error().Err(err).Str("schedule_id", scheduleID).Msg("Failed to update schedule")
 		http.Error(w, "Failed to update schedule: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -80,6 +84,7 @@ func (h *ScheduleHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	scheduleID := chi.URLParam(r, "scheduleId")
 	err := h.service.DeleteSchedule(scheduleID)
 	if err != nil {
+		log.Error().Err(err).Str("schedule_id", scheduleID).Msg("Failed to delete schedule")
 		http.Error(w, "Failed to delete schedule: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

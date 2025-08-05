@@ -1,6 +1,6 @@
 package websocket
 
-import "log"
+import "github.com/rs/zerolog/log"
 
 // Hub maintains the set of active clients and broadcasts messages to them.
 type Hub struct {
@@ -37,7 +37,7 @@ func (h *Hub) Run() {
 		select {
 		case client := <-h.Register:
 			h.clients[client] = true
-			log.Printf("Client connected. Total clients: %d", len(h.clients))
+			log.Info().Int("total_clients", len(h.clients)).Msg("Client connected")
 			// If client has a server ID on registration, subscribe them.
 			if client.ServerID != "" {
 				h.addSubscription(client, client.ServerID)
@@ -48,7 +48,7 @@ func (h *Hub) Run() {
 				delete(h.clients, client)
 				close(client.Send)
 				h.removeSubscription(client)
-				log.Printf("Client disconnected. Total clients: %d", len(h.clients))
+				log.Info().Int("total_clients", len(h.clients)).Msg("Client disconnected")
 			}
 		case message := <-h.Broadcast:
 			for client := range h.clients {

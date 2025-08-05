@@ -3,12 +3,12 @@ package monitoring
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/isdelr/ender-deploy-be/internal/models"
 	"github.com/isdelr/ender-deploy-be/internal/services"
 	"github.com/robfig/cron/v3"
+	"github.com/rs/zerolog/log"
 )
 
 // Scheduler checks for and executes scheduled tasks.
@@ -34,7 +34,7 @@ func NewScheduler(scheduleSvc services.ScheduleServiceProvider, serverSvc servic
 
 // Run starts the scheduler's ticking loop.
 func (s *Scheduler) Run() {
-	log.Println("Starting background scheduler...")
+	log.Info().Msg("Starting background scheduler...")
 	s.ticker = time.NewTicker(1 * time.Minute)
 	defer s.ticker.Stop()
 
@@ -44,7 +44,7 @@ func (s *Scheduler) Run() {
 	for {
 		select {
 		case <-s.done:
-			log.Println("Stopping background scheduler.")
+			log.Info().Msg("Stopping background scheduler.")
 			return
 		case <-s.ticker.C:
 			s.checkAndRunSchedules()
@@ -61,14 +61,14 @@ func (s *Scheduler) Stop() {
 func (s *Scheduler) checkAndRunSchedules() {
 	schedules, err := s.scheduleSvc.GetAllActiveSchedules()
 	if err != nil {
-		log.Printf("Scheduler: Failed to retrieve active schedules: %v", err)
+		log.Error().Err(err).Msg("Scheduler: Failed to retrieve active schedules")
 		return
 	}
 
 	for _, schedule := range schedules {
 		cronSchedule, err := cron.ParseStandard(schedule.CronExpression)
 		if err != nil {
-			log.Printf("Scheduler: Invalid cron expression for schedule %s: %v", schedule.ID, err)
+			log.Warn().Err(err).Str("schedule_id", schedule.ID).Msg("Scheduler: Invalid cron expression")
 			continue
 		}
 
@@ -87,7 +87,7 @@ func (s *Scheduler) checkAndRunSchedules() {
 
 // executeTask performs the action defined by the schedule.
 func (s *Scheduler) executeTask(schedule models.Schedule) {
-	log.Printf("Scheduler: Executing task '%s' for server %s", schedule.Name, schedule.ServerID)
+	log.Info().Str("task_name", schedule.Name).Str("server_id", schedule.ServerID).Msg("Scheduler: Executing task")
 	var err error
 
 	switch schedule.TaskType {
@@ -120,7 +120,7 @@ func (s *Scheduler) executeTask(schedule models.Schedule) {
 	}
 
 	if err != nil {
-		log.Printf("Scheduler: Error executing task %s: %v", schedule.ID, err)
+		log.Error().Err(err).Str("schedule_id", schedule.ID).Msg("Scheduler: Error executing task")
 		msg := fmt.Sprintf("Scheduled task '%s' failed to execute: %v", schedule.Name, err)
 		s.eventSvc.CreateEvent("schedule.execute.fail", "error", msg, &schedule.ServerID)
 	} else {

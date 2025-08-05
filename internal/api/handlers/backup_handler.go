@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/isdelr/ender-deploy-be/internal/services"
+	"github.com/rs/zerolog/log"
 )
 
 // BackupHandler handles HTTP requests related to backups.
@@ -28,6 +29,7 @@ func (h *BackupHandler) GetAllForServer(w http.ResponseWriter, r *http.Request) 
 	serverID := chi.URLParam(r, "id")
 	backups, err := h.service.GetBackupsForServer(serverID)
 	if err != nil {
+		log.Error().Err(err).Str("server_id", serverID).Msg("Failed to retrieve backups for server")
 		http.Error(w, "Failed to retrieve backups: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -60,7 +62,7 @@ func (h *BackupHandler) Create(w http.ResponseWriter, r *http.Request) {
 			// For now, we'll log it to the console.
 			// Note: We can't write an HTTP error response here because the
 			// original request has already completed.
-			// log.Printf("Failed to create backup for server %s in background: %v", serverID, err)
+			log.Error().Err(err).Str("server_id", serverID).Str("backup_name", payload.Name).Msg("Failed to create backup in background")
 		}
 	}()
 
@@ -74,6 +76,7 @@ func (h *BackupHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	backupID := chi.URLParam(r, "backupId")
 	err := h.service.DeleteBackup(backupID)
 	if err != nil {
+		log.Error().Err(err).Str("backup_id", backupID).Msg("Failed to delete backup")
 		http.Error(w, "Failed to delete backup: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -88,7 +91,7 @@ func (h *BackupHandler) Restore(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		err := h.service.RestoreBackup(backupID)
 		if err != nil {
-			// log.Printf("Failed to restore backup %s in background: %v", backupID, err)
+			log.Error().Err(err).Str("backup_id", backupID).Msg("Failed to restore backup in background")
 		}
 	}()
 

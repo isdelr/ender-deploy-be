@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/isdelr/ender-deploy-be/internal/auth"
 	"github.com/isdelr/ender-deploy-be/internal/services"
+	"github.com/rs/zerolog/log"
 )
 
 // UserHandler handles HTTP requests for user management.
@@ -44,6 +45,7 @@ func (h *UserHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.service.CreateUser(payload.Username, payload.Email, payload.Password)
 	if err != nil {
+		log.Error().Err(err).Str("email", payload.Email).Msg("Failed to register user")
 		http.Error(w, "Failed to register user: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -65,12 +67,14 @@ func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.service.AuthenticateUser(payload.Email, payload.Password)
 	if err != nil {
+		log.Warn().Err(err).Str("email", payload.Email).Msg("Failed authentication attempt")
 		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
 		return
 	}
 
 	token, err := auth.GenerateJWT(user)
 	if err != nil {
+		log.Error().Err(err).Str("user_id", user.ID).Msg("Failed to generate JWT")
 		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
 		return
 	}
@@ -100,12 +104,14 @@ func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	claims, ok := r.Context().Value(auth.UserClaimsKey).(*auth.Claims)
 	if !ok {
+		log.Error().Msg("Could not retrieve user claims from context")
 		http.Error(w, "Could not retrieve user from token", http.StatusInternalServerError)
 		return
 	}
 
 	user, err := h.service.GetUserByID(claims.UserID)
 	if err != nil {
+		log.Error().Err(err).Str("user_id", claims.UserID).Msg("User from token not found in DB")
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
@@ -118,6 +124,7 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	user, err := h.service.GetUserByID(id)
 	if err != nil {
+		log.Warn().Err(err).Str("user_id", id).Msg("Failed to get user by ID")
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
@@ -139,6 +146,7 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.service.UpdateUser(id, payload.Username, payload.Email)
 	if err != nil {
+		log.Error().Err(err).Str("user_id", id).Msg("Failed to update user")
 		http.Error(w, "Failed to update user", http.StatusInternalServerError)
 		return
 	}
@@ -151,6 +159,7 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.service.DeleteUser(id); err != nil {
+		log.Error().Err(err).Str("user_id", id).Msg("Failed to delete user")
 		http.Error(w, "Failed to delete user", http.StatusInternalServerError)
 		return
 	}
@@ -171,6 +180,7 @@ func (h *UserHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	err := h.service.UpdatePassword(id, payload.CurrentPassword, payload.NewPassword)
 	if err != nil {
+		log.Error().Err(err).Str("user_id", id).Msg("Failed to change password")
 		http.Error(w, "Failed to change password: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

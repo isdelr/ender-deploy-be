@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/isdelr/ender-deploy-be/internal/models"
 	"github.com/isdelr/ender-deploy-be/internal/services"
+	"github.com/rs/zerolog/log"
 )
 
 // ServerHandler handles HTTP requests related to servers.
@@ -30,6 +31,10 @@ type CreateServerPayload struct {
 func (h *ServerHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	servers, err := h.service.GetAllServers()
 	if err != nil {
+		// Log the actual error to your server's console
+		log.Error().Err(err).Msg("Failed to retrieve servers")
+
+		// Return the generic error to the client
 		http.Error(w, "Failed to retrieve servers", http.StatusInternalServerError)
 		return
 	}
@@ -61,6 +66,7 @@ func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	newServer, err := h.service.CreateServerFromTemplate(payload.Name, payload.TemplateID)
 	if err != nil {
+		log.Error().Err(err).Str("server_name", payload.Name).Str("template_id", payload.TemplateID).Msg("Failed to create server")
 		http.Error(w, "Failed to create server: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -82,6 +88,7 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	updatedServer, err := h.service.UpdateServer(id, server)
 	if err != nil {
+		log.Error().Err(err).Str("server_id", id).Msg("Failed to update server")
 		http.Error(w, "Failed to update server", http.StatusInternalServerError)
 		return
 	}
@@ -95,6 +102,7 @@ func (h *ServerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	err := h.service.DeleteServer(id)
 	if err != nil {
+		log.Error().Err(err).Str("server_id", id).Msg("Failed to delete server")
 		http.Error(w, "Failed to delete server", http.StatusInternalServerError)
 		return
 	}
@@ -115,6 +123,7 @@ func (h *ServerHandler) PerformAction(w http.ResponseWriter, r *http.Request) {
 
 	err := h.service.PerformServerAction(id, payload.Action)
 	if err != nil {
+		log.Error().Err(err).Str("server_id", id).Str("action", payload.Action).Msg("Failed to perform server action")
 		http.Error(w, "Failed to perform action: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -143,6 +152,7 @@ func (h *ServerHandler) SendServerConsoleCommand(w http.ResponseWriter, r *http.
 	}
 
 	if _, err := h.service.SendCommandToServer(id, payload.Command); err != nil {
+		log.Error().Err(err).Str("server_id", id).Str("command", payload.Command).Msg("Failed to send command to server")
 		http.Error(w, "Failed to send command: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -155,6 +165,7 @@ func (h *ServerHandler) SendServerConsoleCommand(w http.ResponseWriter, r *http.
 func (h *ServerHandler) GetDashboardStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.service.GetDashboardStatistics()
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to retrieve dashboard stats")
 		http.Error(w, "Failed to retrieve dashboard stats: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -174,6 +185,7 @@ func (h *ServerHandler) GetServerFileContent(w http.ResponseWriter, r *http.Requ
 
 	content, err := h.service.GetFileContent(serverID, filePath)
 	if err != nil {
+		log.Error().Err(err).Str("server_id", serverID).Str("path", filePath).Msg("Failed to get file content")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -189,6 +201,7 @@ func (h *ServerHandler) ListServerFiles(w http.ResponseWriter, r *http.Request) 
 
 	files, err := h.service.ListFiles(serverID, dirPath)
 	if err != nil {
+		log.Error().Err(err).Str("server_id", serverID).Str("path", dirPath).Msg("Failed to list files for server")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -212,6 +225,7 @@ func (h *ServerHandler) UpdateServerFile(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := h.service.UpdateFileContent(serverID, payload.Path, []byte(payload.Content)); err != nil {
+		log.Error().Err(err).Str("server_id", serverID).Str("path", payload.Path).Msg("Failed to update file content")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -225,6 +239,7 @@ func (h *ServerHandler) GetServerSettings(w http.ResponseWriter, r *http.Request
 	id := chi.URLParam(r, "id")
 	settings, err := h.service.GetServerSettings(id)
 	if err != nil {
+		log.Error().Err(err).Str("server_id", id).Msg("Failed to get server settings")
 		http.Error(w, "Failed to get server settings: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -242,6 +257,7 @@ func (h *ServerHandler) UpdateServerSettings(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := h.service.UpdateServerSettings(id, settings); err != nil {
+		log.Error().Err(err).Str("server_id", id).Msg("Failed to update server settings")
 		http.Error(w, "Failed to update server settings: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -258,6 +274,7 @@ func (h *ServerHandler) GetServerResourceHistory(w http.ResponseWriter, r *http.
 	// For now, we'll assume a default recent history is fetched by the service.
 	history, err := h.service.GetResourceHistory(id)
 	if err != nil {
+		log.Error().Err(err).Str("server_id", id).Msg("Failed to retrieve resource history")
 		http.Error(w, "Failed to retrieve resource history: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -275,6 +292,7 @@ func (h *ServerHandler) GetOnlinePlayers(w http.ResponseWriter, r *http.Request)
 		if err.Error() == "server is not online" {
 			http.Error(w, err.Error(), http.StatusConflict)
 		} else {
+			log.Error().Err(err).Str("server_id", id).Msg("Failed to get online players")
 			http.Error(w, "Failed to get online players: "+err.Error(), http.StatusInternalServerError)
 		}
 		return
@@ -299,6 +317,7 @@ func (h *ServerHandler) ManagePlayer(w http.ResponseWriter, r *http.Request) {
 
 	err := h.service.ManagePlayer(serverID, payload.Action, payload.Player, payload.Reason)
 	if err != nil {
+		log.Error().Err(err).Str("server_id", serverID).Str("action", payload.Action).Str("player", payload.Player).Msg("Failed to manage player")
 		http.Error(w, "Failed to "+payload.Action+" player: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -315,6 +334,7 @@ func (h *ServerHandler) BindPort(w http.ResponseWriter, r *http.Request) {
 
 	port, err := services.FindAvailablePort(preferredPort)
 	if err != nil {
+		log.Error().Err(err).Int("preferred_port", preferredPort).Msg("Failed to find available port")
 		http.Error(w, "Failed to find available port", http.StatusInternalServerError)
 		return
 	}

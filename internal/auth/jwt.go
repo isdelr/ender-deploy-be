@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/isdelr/ender-deploy-be/internal/models"
+	"github.com/rs/zerolog/log"
 )
 
 var jwtKey = []byte(os.Getenv("JWT_SECRET"))
@@ -44,14 +44,11 @@ func GenerateJWT(user models.User) (string, error) {
 // ValidateJWT parses and validates a JWT string.
 func ValidateJWT(tokenStr string) (*Claims, error) {
 	claims := &Claims{}
-	token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
 		return jwtKey, nil
 	})
 	if err != nil {
 		return nil, err
-	}
-	if !token.Valid {
-		return nil, fmt.Errorf("invalid token")
 	}
 	return claims, nil
 }
@@ -96,7 +93,7 @@ func JWTMiddleware() func(http.Handler) http.Handler {
 
 			// 5. Pass claims down via context
 			ctx := context.WithValue(r.Context(), UserClaimsKey, claims)
-			fmt.Printf("Authenticated user: %s (ID: %s)\n", claims.Username, claims.UserID)
+			log.Info().Str("username", claims.Username).Str("user_id", claims.UserID).Msg("User authenticated via JWT")
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

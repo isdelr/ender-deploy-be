@@ -6,7 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
@@ -23,6 +24,7 @@ import (
 	"github.com/isdelr/ender-deploy-be/internal/docker"
 	"github.com/isdelr/ender-deploy-be/internal/models"
 	"github.com/isdelr/ender-deploy-be/internal/websocket"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -40,7 +42,7 @@ type ServerServiceProvider interface {
 	PerformServerAction(id, action string) error
 	UpdateServerStats(server models.Server) error
 	SendCommandToServer(serverID, command string) (string, error)
-	StreamServerLogs(serverID string, sendChan chan []byte)
+	StreamServerLogs(ctx context.Context, serverID string, sendChan chan []byte)
 	ListFiles(serverID, path string) ([]models.FileInfo, error)
 	GetFileContent(serverID, path string) ([]byte, error)
 	UpdateFileContent(serverID, path string, content []byte) error
@@ -74,12 +76,11 @@ func NewServerService(db *sql.DB, docker *docker.Client, hub *websocket.Hub, tem
 	}
 }
 
-// GetAllServers retrieves all servers from the database.
 func (s *ServerService) GetAllServers() ([]models.Server, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, status, port, minecraft_version, java_version, 
+		SELECT id, name, status, port, minecraft_version, java_version,
 		       players_current, players_max, cpu_usage, ram_usage, storage_usage,
-		       ip_address, modpack_name, modpack_version 
+		       ip_address, modpack_name, modpack_version, docker_container_id, data_path
 		FROM servers
 	`)
 	if err != nil {
@@ -90,15 +91,32 @@ func (s *ServerService) GetAllServers() ([]models.Server, error) {
 	var servers []models.Server
 	for rows.Next() {
 		var srv models.Server
-		var modpackName, modpackVersion sql.NullString
+		var modpackName, modpackVersion, dockerContainerID, dataPath sql.NullString
+		var playersCurrent, playersMax, storageUsage sql.NullInt64
+		var cpuUsage, ramUsage sql.NullFloat64
+		var port sql.NullInt32
+		var ipAddress sql.NullString
+
 		err := rows.Scan(
-			&srv.ID, &srv.Name, &srv.Status, &srv.Port, &srv.MinecraftVersion, &srv.JavaVersion,
-			&srv.Players.Current, &srv.Players.Max, &srv.Resources.CPU, &srv.Resources.RAM, &srv.Resources.Storage,
-			&srv.IPAddress, &modpackName, &modpackVersion,
+			&srv.ID, &srv.Name, &srv.Status, &port, &srv.MinecraftVersion, &srv.JavaVersion,
+			&playersCurrent, &playersMax, &cpuUsage, &ramUsage, &storageUsage,
+			&ipAddress, &modpackName, &modpackVersion, &dockerContainerID, &dataPath,
 		)
 		if err != nil {
 			return nil, err
 		}
+
+		// Safely assign values from nullable types to the struct
+		srv.Port = int(port.Int32)
+		srv.IPAddress = ipAddress.String
+		srv.Players.Current = int(playersCurrent.Int64)
+		srv.Players.Max = int(playersMax.Int64)
+		srv.Resources.CPU = cpuUsage.Float64
+		srv.Resources.RAM = ramUsage.Float64
+		srv.Resources.Storage = int(storageUsage.Int64)
+		srv.DockerContainerID = dockerContainerID.String
+		srv.DataPath = dataPath.String
+
 		if modpackName.Valid && modpackVersion.Valid {
 			srv.Modpack = &models.ModpackInfo{Name: modpackName.String, Version: modpackVersion.String}
 		}
@@ -110,34 +128,43 @@ func (s *ServerService) GetAllServers() ([]models.Server, error) {
 // GetServerByID retrieves a single server by its ID.
 func (s *ServerService) GetServerByID(id string) (models.Server, error) {
 	var srv models.Server
-	var modpackName, modpackVersion, containerID, dataPath, templateID sql.NullString
+	var modpackName, modpackVersion, containerID, dataPath, templateID, ipAddress sql.NullString
+	// Use nullable types to scan from DB
+	var playersCurrent, playersMax, storageUsage sql.NullInt64
+	var cpuUsage, ramUsage sql.NullFloat64
+	var port sql.NullInt32
+
 	row := s.db.QueryRow(`
-		SELECT id, name, status, port, minecraft_version, java_version, 
+		SELECT id, name, status, port, minecraft_version, java_version,
 		       players_current, players_max, cpu_usage, ram_usage, storage_usage,
 		       ip_address, modpack_name, modpack_version, docker_container_id, data_path, template_id
 		FROM servers WHERE id = ?`, id)
 	err := row.Scan(
-		&srv.ID, &srv.Name, &srv.Status, &srv.Port, &srv.MinecraftVersion, &srv.JavaVersion,
-		&srv.Players.Current, &srv.Players.Max, &srv.Resources.CPU, &srv.Resources.RAM, &srv.Resources.Storage,
-		&srv.IPAddress, &modpackName, &modpackVersion, &containerID, &dataPath, &templateID)
+		&srv.ID, &srv.Name, &srv.Status, &port, &srv.MinecraftVersion, &srv.JavaVersion,
+		&playersCurrent, &playersMax, &cpuUsage, &ramUsage, &storageUsage,
+		&ipAddress, &modpackName, &modpackVersion, &containerID, &dataPath, &templateID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return models.Server{}, fmt.Errorf("server with id %s not found", id)
 		}
 		return models.Server{}, err
 	}
+	// Safely assign values from nullable types to the struct
+	srv.Port = int(port.Int32)
+	srv.IPAddress = ipAddress.String
+	srv.Players.Current = int(playersCurrent.Int64)
+	srv.Players.Max = int(playersMax.Int64)
+	srv.Resources.CPU = cpuUsage.Float64
+	srv.Resources.RAM = ramUsage.Float64
+	srv.Resources.Storage = int(storageUsage.Int64)
+	srv.DockerContainerID = containerID.String
+	srv.DataPath = dataPath.String
+	srv.TemplateID = templateID.String
+
 	if modpackName.Valid && modpackVersion.Valid {
 		srv.Modpack = &models.ModpackInfo{Name: modpackName.String, Version: modpackVersion.String}
 	}
-	if containerID.Valid {
-		srv.DockerContainerID = containerID.String
-	}
-	if dataPath.Valid {
-		srv.DataPath = dataPath.String
-	}
-	if templateID.Valid {
-		srv.TemplateID = templateID.String
-	}
+
 	return srv, nil
 }
 
@@ -146,6 +173,31 @@ func (s *ServerService) CreateServerFromTemplate(name, templateId string) (model
 	template, err := s.templateService.GetTemplateByID(templateId)
 	if err != nil {
 		return models.Server{}, fmt.Errorf("failed to retrieve template: %w", err)
+	}
+
+	// This block checks if the image exists and pulls it if needed.
+	ctx := context.Background()
+	imageName := "itzg/minecraft-server:latest"
+
+	_, _, err = s.docker.ImageInspectWithRaw(ctx, imageName)
+	if err != nil {
+		// client.IsErrNotFound is the canonical way to check for a missing image.
+		if client.IsErrNotFound(err) {
+			log.Info().Str("image", imageName).Msg("Image not found locally. Pulling from Docker Hub...")
+			puller, pullErr := s.docker.ImagePull(ctx, imageName, image.PullOptions{})
+			if pullErr != nil {
+				return models.Server{}, fmt.Errorf("failed to start image pull: %w", pullErr)
+			}
+			defer puller.Close()
+			// This will stream the pull progress to your backend's stdout, which is useful for debugging.
+			io.Copy(os.Stdout, puller)
+			log.Info().Str("image", imageName).Msg("Image pulled successfully.")
+		} else {
+			// A different error occurred during image inspection.
+			return models.Server{}, fmt.Errorf("failed to inspect docker image '%s': %w", imageName, err)
+		}
+	} else {
+		log.Info().Str("image", imageName).Msg("Image found locally.")
 	}
 
 	server := models.Server{
@@ -157,10 +209,16 @@ func (s *ServerService) CreateServerFromTemplate(name, templateId string) (model
 		TemplateID:       template.ID,
 	}
 
+	// --- OS-INDEPENDENT PATH HANDLING ---
 	server.DataPath = filepath.Join(s.serverDataPath, server.ID)
-	if err := os.MkdirAll(server.DataPath, 0755); err != nil {
+	absDataPath, err := filepath.Abs(server.DataPath)
+	if err != nil {
+		return server, fmt.Errorf("failed to get absolute path for server data: %w", err)
+	}
+	if err := os.MkdirAll(absDataPath, 0755); err != nil {
 		return server, fmt.Errorf("failed to create server data directory: %w", err)
 	}
+	// --- END ---
 
 	envVars, err := s.buildEnvVarsFromTemplate(template, name)
 	if err != nil {
@@ -179,8 +237,8 @@ func (s *ServerService) CreateServerFromTemplate(name, templateId string) (model
 	server.IPAddress = fmt.Sprintf("127.0.0.1:%d", gamePort)
 
 	exposedPorts := nat.PortSet{
-		"25565/tcp": struct{}{},
-		"25575/tcp": struct{}{},
+		"25565/tcp": {},
+		"25575/tcp": {},
 	}
 	portBindings := nat.PortMap{
 		"25565/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: strconv.Itoa(gamePort)}},
@@ -188,7 +246,7 @@ func (s *ServerService) CreateServerFromTemplate(name, templateId string) (model
 	}
 
 	containerConfig := &container.Config{
-		Image:        "itzg/minecraft-server",
+		Image:        imageName, // Use the variable defined above
 		Env:          envVars,
 		Tty:          true,
 		ExposedPorts: exposedPorts,
@@ -199,16 +257,18 @@ func (s *ServerService) CreateServerFromTemplate(name, templateId string) (model
 	}
 
 	hostConfig := &container.HostConfig{
-		Mounts:       []mount.Mount{{Type: mount.TypeBind, Source: server.DataPath, Target: "/data"}},
+		Mounts:       []mount.Mount{{Type: mount.TypeBind, Source: filepath.ToSlash(absDataPath), Target: "/data"}},
 		PortBindings: portBindings,
 	}
 
 	containerName := "enderdeploy_" + server.ID
-	resp, err := s.docker.CreateContainer(context.Background(), containerConfig, hostConfig, containerName)
+	// Use the same context `ctx` from the image pull operation
+	resp, err := s.docker.CreateContainer(ctx, containerConfig, hostConfig, containerName)
 	if err != nil {
 		return server, fmt.Errorf("failed to create docker container: %w", err)
 	}
 	server.DockerContainerID = resp.ID
+	server.DataPath = absDataPath
 
 	props := template.GetProperties()
 	maxPlayers := 20 // default
@@ -238,7 +298,7 @@ func (s *ServerService) CreateServerFromTemplate(name, templateId string) (model
 	s.broadcastServerUpdate(newServer)
 
 	s.eventService.CreateEvent("server.create", "info", fmt.Sprintf("Server '%s' was created successfully.", newServer.Name), &newServer.ID)
-	log.Printf("Successfully created server '%s' from template '%s' with container ID %s", server.Name, template.Name, server.DockerContainerID)
+	log.Info().Str("server_name", server.Name).Str("template_name", template.Name).Str("container_id", server.DockerContainerID).Msg("Successfully created server")
 	return newServer, nil
 }
 
@@ -298,22 +358,22 @@ func (s *ServerService) DeleteServer(id string) error {
 	}
 
 	ctx := context.Background()
-	log.Printf("Stopping and removing container %s", server.DockerContainerID)
+	log.Info().Str("container_id", server.DockerContainerID).Msg("Stopping and removing container")
 	s.docker.StopContainer(ctx, server.DockerContainerID)
 	err = s.docker.RemoveContainer(ctx, server.DockerContainerID)
 	if err != nil && !client.IsErrNotFound(err) {
-		log.Printf("Warning: could not remove container %s: %v", server.DockerContainerID, err)
+		log.Warn().Err(err).Str("container_id", server.DockerContainerID).Msg("Could not remove container during server deletion")
 	}
 
-	log.Printf("Deleting server %s from database", id)
+	log.Info().Str("server_id", id).Msg("Deleting server from database")
 	_, err = s.db.Exec("DELETE FROM servers WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("failed to delete server from DB: %w", err)
 	}
 
-	log.Printf("Deleting server data at %s", server.DataPath)
+	log.Info().Str("data_path", server.DataPath).Msg("Deleting server data")
 	if err = os.RemoveAll(server.DataPath); err != nil {
-		log.Printf("Warning: failed to delete server data directory %s: %v", server.DataPath, err)
+		log.Warn().Err(err).Str("data_path", server.DataPath).Msg("Failed to delete server data directory")
 	}
 
 	s.eventService.CreateEvent("server.delete", "warn", fmt.Sprintf("Server '%s' was permanently deleted.", server.Name), nil) // serverId won't exist anymore
@@ -330,10 +390,11 @@ func (s *ServerService) PerformServerAction(id, action string) error {
 
 	var newStatus, eventLevel, eventMessage string
 	ctx := context.Background()
+	logCtx := log.Info().Str("server_id", id).Str("container_id", server.DockerContainerID).Str("action", action)
 
 	switch action {
 	case "start":
-		log.Printf("Starting container %s", server.DockerContainerID)
+		logCtx.Msg("Starting container")
 		if err := s.docker.StartContainer(ctx, server.DockerContainerID); err != nil {
 			return err
 		}
@@ -341,7 +402,7 @@ func (s *ServerService) PerformServerAction(id, action string) error {
 		eventLevel = "info"
 		eventMessage = fmt.Sprintf("Server '%s' has started.", server.Name)
 	case "stop":
-		log.Printf("Stopping container %s", server.DockerContainerID)
+		logCtx.Msg("Stopping container")
 		if err := s.docker.StopContainer(ctx, server.DockerContainerID); err != nil {
 			return err
 		}
@@ -349,7 +410,7 @@ func (s *ServerService) PerformServerAction(id, action string) error {
 		eventLevel = "info"
 		eventMessage = fmt.Sprintf("Server '%s' was stopped.", server.Name)
 	case "restart":
-		log.Printf("Restarting container %s", server.DockerContainerID)
+		logCtx.Msg("Restarting container")
 		if err := s.docker.RestartContainer(ctx, server.DockerContainerID); err != nil {
 			return err
 		}
@@ -357,7 +418,7 @@ func (s *ServerService) PerformServerAction(id, action string) error {
 		eventLevel = "info"
 		eventMessage = fmt.Sprintf("Server '%s' is restarting.", server.Name)
 	case "reinstall":
-		log.Printf("Reinstalling server %s", server.Name)
+		logCtx.Msg("Reinstalling server")
 		if err := s.docker.StopContainer(ctx, server.DockerContainerID); err != nil {
 			return fmt.Errorf("failed to stop server for reinstall: %w", err)
 		}
@@ -368,7 +429,7 @@ func (s *ServerService) PerformServerAction(id, action string) error {
 		for _, d := range dir {
 			os.RemoveAll(filepath.Join(server.DataPath, d.Name()))
 		}
-		log.Printf("Cleared data directory for server %s", server.Name)
+		log.Info().Str("server_id", id).Msg("Cleared data directory")
 
 		if err := s.docker.StartContainer(ctx, server.DockerContainerID); err != nil {
 			return fmt.Errorf("failed to start server after reinstall: %w", err)
@@ -404,7 +465,7 @@ func (s *ServerService) UpdateServerStats(server models.Server) error {
 
 	// Update the main servers table
 	_, err = tx.Exec(`
-		UPDATE servers 
+		UPDATE servers
 		SET status = ?, players_current = ?, cpu_usage = ?, ram_usage = ?, storage_usage = ?
 		WHERE id = ?`,
 		server.Status, server.Players.Current, server.Resources.CPU, server.Resources.RAM, server.Resources.Storage, server.ID)
@@ -414,7 +475,7 @@ func (s *ServerService) UpdateServerStats(server models.Server) error {
 
 	// Insert into history table
 	_, err = tx.Exec(`
-		INSERT INTO resource_history (server_id, cpu_usage, ram_usage, players_current) 
+		INSERT INTO resource_history (server_id, cpu_usage, ram_usage, players_current)
 		VALUES (?, ?, ?, ?)`,
 		server.ID, server.Resources.CPU, server.Resources.RAM, server.Players.Current)
 	if err != nil {
@@ -463,7 +524,7 @@ func (s *ServerService) SendCommandToServer(serverID, command string) (string, e
 		return "", fmt.Errorf("rcon command failed: %w", err)
 	}
 
-	log.Printf("RCON command '%s' to server '%s' got response: %s", command, server.Name, response)
+	log.Info().Str("command", command).Str("server_name", server.Name).Str("response", response).Msg("RCON command executed")
 
 	// Broadcast command and response to subscribed log viewers
 	logMsg := fmt.Sprintf("CMD> %s\n%s", command, response)
@@ -475,27 +536,26 @@ func (s *ServerService) SendCommandToServer(serverID, command string) (string, e
 }
 
 // StreamServerLogs streams the logs of a container to a websocket client.
-func (s *ServerService) StreamServerLogs(serverID string, sendChan chan []byte) {
+// The context passed in is from the HTTP request, which is cancelled on client disconnect.
+func (s *ServerService) StreamServerLogs(ctx context.Context, serverID string, sendChan chan []byte) {
 	server, err := s.GetServerByID(serverID)
 	if err != nil {
-		log.Printf("Cannot stream logs, server not found: %s", serverID)
+		log.Warn().Str("server_id", serverID).Msg("Cannot stream logs, server not found")
 		return
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// Do not create a new context; use the one that was passed in.
+	// Its cancellation will signal that the client has disconnected.
 
 	logReader, err := s.docker.GetContainerLogs(ctx, server.DockerContainerID, true)
 	if err != nil {
-		log.Printf("Failed to get container logs for %s: %v", serverID, err)
+		// This error is expected if the context is already cancelled (client disconnected before logs could be fetched).
+		if err != context.Canceled {
+			log.Error().Err(err).Str("server_id", serverID).Msg("Failed to get container logs")
+		}
 		return
 	}
 	defer logReader.Close()
-
-	// The log stream from docker might have a header. We can skip it.
-	// For this image, logs are plain text, so we can read directly.
-	// hdr := make([]byte, 8)
-	// logReader.Read(hdr)
 
 	// Stream logs line by line
 	scanner := bufio.NewScanner(logReader)
@@ -507,20 +567,23 @@ func (s *ServerService) StreamServerLogs(serverID string, sendChan chan []byte) 
 		}
 		jsonMsg, _ := json.Marshal(wsMsg)
 
+		// This select block now correctly uses the client's connection context for cancellation.
+		// It will block until one of the cases is ready.
 		select {
 		case <-ctx.Done():
+			// The client's connection was closed. Stop streaming.
+			log.Info().Str("server_id", serverID).Msg("Client disconnected, stopping log stream.")
 			return
 		case sendChan <- jsonMsg:
-		// Message sent
-		default:
-			// Client channel is full or closed, stop streaming
-			log.Printf("Client channel for %s is blocked. Stopping log stream.", serverID)
-			return
+			// Message was successfully sent to the client's channel.
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Printf("Error reading logs for server %s: %v", serverID, err)
+		// Don't log an error if it was caused by the context being canceled.
+		if err != context.Canceled {
+			log.Error().Err(err).Str("server_id", serverID).Msg("Error reading logs from container")
+		}
 	}
 }
 
@@ -532,7 +595,7 @@ func (s *ServerService) broadcastServerUpdate(server models.Server) {
 	}
 	jsonMsg, err := json.Marshal(msg)
 	if err != nil {
-		log.Printf("Error marshalling server update: %v", err)
+		log.Error().Err(err).Msg("Error marshalling server update for broadcast")
 		return
 	}
 	s.hub.Broadcast <- jsonMsg
@@ -551,7 +614,6 @@ func FindAvailablePort(startPort int) (int, error) {
 	return 0, fmt.Errorf("no available ports found")
 }
 
-// GetDashboardStatistics aggregates data for the dashboard view.
 func (s *ServerService) GetDashboardStatistics() (models.DashboardStats, error) {
 	servers, err := s.GetAllServers()
 	if err != nil {
@@ -596,7 +658,8 @@ func (s *ServerService) GetDashboardStatistics() (models.DashboardStats, error) 
 		}
 		dp.CPUUsage = totalCPU.Float64
 		dp.RAMUsage = totalRAM.Float64
-		dp.PlayersCurrent = int(totalPlayers.Int64)
+		// FIX: Assign the sql.NullInt64 struct directly.
+		dp.PlayersCurrent = totalPlayers
 		stats.ResourceHistory = append(stats.ResourceHistory, dp)
 	}
 	// For simplicity, player history will mirror resource history for the global view.
@@ -608,8 +671,8 @@ func (s *ServerService) GetDashboardStatistics() (models.DashboardStats, error) 
 // GetResourceHistory gets recent resource usage for a specific server.
 func (s *ServerService) GetResourceHistory(serverID string) ([]models.ResourceDataPoint, error) {
 	rows, err := s.db.Query(`
-		SELECT timestamp, cpu_usage, ram_usage, players_current 
-		FROM resource_history 
+		SELECT timestamp, cpu_usage, ram_usage, players_current
+		FROM resource_history
 		WHERE server_id = ? AND timestamp >= ?
 		ORDER BY timestamp ASC`, serverID, time.Now().Add(-30*time.Minute))
 	if err != nil {
@@ -696,7 +759,7 @@ func (s *ServerService) ListFiles(serverID, path string) ([]models.FileInfo, err
 	for _, entry := range dirEntries {
 		info, err := entry.Info()
 		if err != nil {
-			log.Printf("Could not get file info for %s: %v", entry.Name(), err)
+			log.Warn().Err(err).Str("file_name", entry.Name()).Msg("Could not get file info during file listing")
 			continue
 		}
 		fileInfos = append(fileInfos, models.FileInfo{

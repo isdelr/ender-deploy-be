@@ -1,10 +1,10 @@
 package websocket
 
 import (
-	"log"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -54,7 +54,7 @@ func (c *Client) ReadPump(handler MessageHandler) {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("error: %v", err)
+				log.Error().Err(err).Msg("Websocket read error")
 			}
 			break
 		}

@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/isdelr/ender-deploy-be/internal/models"
 	"github.com/isdelr/ender-deploy-be/internal/services"
+	"github.com/rs/zerolog/log"
 )
 
 // TemplateHandler handles HTTP requests related to templates.
@@ -24,6 +25,7 @@ func NewTemplateHandler(service services.TemplateServiceProvider) *TemplateHandl
 func (h *TemplateHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	templates, err := h.service.GetAllTemplates()
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to retrieve templates")
 		http.Error(w, "Failed to retrieve templates", http.StatusInternalServerError)
 		return
 	}
@@ -37,6 +39,7 @@ func (h *TemplateHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	template, err := h.service.GetTemplateByID(id)
 	if err != nil {
+		log.Warn().Err(err).Str("template_id", id).Msg("Failed to get template by ID")
 		http.Error(w, "Template not found", http.StatusNotFound)
 		return
 	}
@@ -57,6 +60,7 @@ func (h *TemplateHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	newTemplate, err := h.service.CreateTemplate(template)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to create template")
 		http.Error(w, "Failed to create template", http.StatusInternalServerError)
 		return
 	}
@@ -78,6 +82,7 @@ func (h *TemplateHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	updatedTemplate, err := h.service.UpdateTemplate(id, template)
 	if err != nil {
+		log.Error().Err(err).Str("template_id", id).Msg("Failed to update template")
 		http.Error(w, "Failed to update template", http.StatusInternalServerError)
 		return
 	}
@@ -91,6 +96,7 @@ func (h *TemplateHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	err := h.service.DeleteTemplate(id)
 	if err != nil {
+		log.Error().Err(err).Str("template_id", id).Msg("Failed to delete template")
 		http.Error(w, "Failed to delete template", http.StatusInternalServerError)
 		return
 	}

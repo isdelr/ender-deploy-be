@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/isdelr/ender-deploy-be/internal/models"
+	"github.com/rs/zerolog/log"
 )
 
 // BackupServiceProvider defines the interface for backup services.
@@ -33,10 +34,7 @@ type BackupService struct {
 
 // NewBackupService creates a new BackupService.
 func NewBackupService(db *sql.DB, serverService ServerServiceProvider, eventService EventServiceProvider, backupPath string) *BackupService {
-	// Ensure the base directory for backups exists
-	if err := os.MkdirAll(backupPath, 0755); err != nil {
-		fmt.Printf("Failed to create base backup directory: %v\n", err)
-	}
+	// The check for the backup directory is handled at startup in main.go
 	return &BackupService{
 		db:            db,
 		serverService: serverService,
@@ -157,11 +155,11 @@ func (s *BackupService) DeleteBackup(backupID string) error {
 	server, err := s.serverService.GetServerByID(backup.ServerID)
 	if err != nil {
 		// Log but don't fail, we should still be able to delete the backup record
-		fmt.Printf("Warning: could not find server %s for backup %s\n", backup.ServerID, backup.ID)
+		log.Warn().Str("server_id", backup.ServerID).Str("backup_id", backup.ID).Msg("Could not find server for backup during deletion")
 	}
 
 	if err := os.Remove(backup.Path); err != nil && !os.IsNotExist(err) {
-		fmt.Printf("Warning: could not delete backup file %s: %v\n", backup.Path, err)
+		log.Warn().Err(err).Str("backup_path", backup.Path).Msg("Could not delete backup file from filesystem")
 	}
 
 	_, err = s.db.Exec("DELETE FROM backups WHERE id = ?", backupID)

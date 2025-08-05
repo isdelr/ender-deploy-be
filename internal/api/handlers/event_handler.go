@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/isdelr/ender-deploy-be/internal/services"
+	"github.com/rs/zerolog/log"
 )
 
 // EventHandler handles HTTP requests related to system events.
@@ -28,6 +29,7 @@ func (h *EventHandler) GetRecent(w http.ResponseWriter, r *http.Request) {
 
 	events, err := h.service.GetRecentEvents(limit)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to retrieve events")
 		http.Error(w, "Failed to retrieve events: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

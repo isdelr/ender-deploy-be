@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,43 +13,48 @@ import (
 	"github.com/isdelr/ender-deploy-be/internal/config"
 	"github.com/isdelr/ender-deploy-be/internal/database"
 	"github.com/isdelr/ender-deploy-be/internal/docker"
+	"github.com/isdelr/ender-deploy-be/internal/logger" // Import the new logger package
 	"github.com/isdelr/ender-deploy-be/internal/monitoring"
 	"github.com/isdelr/ender-deploy-be/internal/services"
 	"github.com/isdelr/ender-deploy-be/internal/websocket"
+	"github.com/rs/zerolog/log" // Import zerolog's global logger
 )
 
 func main() {
+	// Initialize the structured, colorized logger as the first step.
+	logger.Init()
+
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		log.Fatal().Err(err).Msg("Failed to load configuration")
 	}
 
 	// Ensure the base directory for server data exists
 	if err := os.MkdirAll(cfg.ServerDataBase, 0755); err != nil {
-		log.Fatalf("Failed to create base server data directory: %v", err)
+		log.Fatal().Err(err).Str("path", cfg.ServerDataBase).Msg("Failed to create base server data directory")
 	}
 
 	// Ensure the base directory for backups exists
 	if err := os.MkdirAll(cfg.BackupPath, 0755); err != nil {
-		log.Fatalf("Failed to create base backup directory: %v", err)
+		log.Fatal().Err(err).Str("path", cfg.BackupPath).Msg("Failed to create base backup directory")
 	}
 
 	// Set up database
 	db, err := database.New(cfg.DatabasePath)
 	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		log.Fatal().Err(err).Msg("Failed to initialize database")
 	}
 	defer db.Close()
 
 	if err := database.Migrate(db); err != nil {
-		log.Fatalf("Failed to apply database migrations: %v", err)
+		log.Fatal().Err(err).Msg("Failed to apply database migrations")
 	}
 
 	// Set up Docker client
 	dockerClient, err := docker.New()
 	if err != nil {
-		log.Fatalf("Failed to initialize Docker client: %v", err)
+		log.Fatal().Err(err).Msg("Failed to initialize Docker client")
 	}
 
 	// Set up WebSocket Hub
@@ -84,16 +88,16 @@ func main() {
 
 	// Graceful shutdown
 	go func() {
-		log.Printf("Server starting on port %d\n", cfg.ServerPort)
+		log.Info().Int("port", cfg.ServerPort).Msg("Server starting")
 		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-			log.Fatalf("ListenAndServe(): %v", err)
+			log.Fatal().Err(err).Msg("ListenAndServe() failed")
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("Shutting down server...")
+	log.Info().Msg("Shutting down server...")
 
 	statUpdater.Stop() // Stop the monitoring service
 	scheduler.Stop()   // Stop the scheduler
@@ -102,8 +106,8 @@ func main() {
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		log.Fatal().Err(err).Msg("Server forced to shutdown")
 	}
 
-	log.Println("Server exiting")
+	log.Info().Msg("Server exiting")
 }

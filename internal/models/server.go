@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"database/sql"
+	"encoding/json"
+	"time"
+)
 
 // Server represents a single Minecraft server instance.
 type Server struct {
@@ -53,10 +57,25 @@ type FileInfo struct {
 
 // ResourceDataPoint represents a single point in time for resource usage.
 type ResourceDataPoint struct {
-	Timestamp      time.Time `json:"timestamp"`
-	CPUUsage       float64   `json:"cpuUsage"`
-	RAMUsage       float64   `json:"ramUsage"`
-	PlayersCurrent int       `json:"playersCurrent"`
+	Timestamp      time.Time     `json:"timestamp"`
+	CPUUsage       float64       `json:"cpuUsage"`
+	RAMUsage       float64       `json:"ramUsage"`
+	PlayersCurrent sql.NullInt64 `json:"-"` // Hide original field from JSON
+}
+
+// MarshalJSON provides a custom marshaller for ResourceDataPoint to handle sql.NullInt64.
+func (r ResourceDataPoint) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Timestamp      time.Time `json:"timestamp"`
+		CPUUsage       float64   `json:"cpuUsage"`
+		RAMUsage       float64   `json:"ramUsage"`
+		PlayersCurrent int64     `json:"playersCurrent"`
+	}{
+		Timestamp:      r.Timestamp,
+		CPUUsage:       r.CPUUsage,
+		RAMUsage:       r.RAMUsage,
+		PlayersCurrent: r.PlayersCurrent.Int64, // Convert sql.NullInt64 to a simple int64
+	})
 }
 
 // OnlinePlayer represents a player currently on the server.

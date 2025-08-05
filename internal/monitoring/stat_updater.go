@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/isdelr/ender-deploy-be/internal/docker"
 	"github.com/isdelr/ender-deploy-be/internal/models"
 	"github.com/isdelr/ender-deploy-be/internal/services"
+	"github.com/rs/zerolog/log"
 )
 
 // StatUpdater is responsible for periodically fetching and updating server stats.
@@ -40,7 +40,7 @@ func NewStatUpdater(db *sql.DB, docker *docker.Client, serverSvc services.Server
 
 // Run starts the periodic updates.
 func (su *StatUpdater) Run() {
-	log.Println("Starting background stat updater...")
+	log.Info().Msg("Starting background stat updater...")
 	su.ticker = time.NewTicker(15 * time.Second) // Update every 15 seconds
 	defer su.ticker.Stop()
 
@@ -50,7 +50,7 @@ func (su *StatUpdater) Run() {
 	for {
 		select {
 		case <-su.done:
-			log.Println("Stopping background stat updater.")
+			log.Info().Msg("Stopping background stat updater.")
 			return
 		case <-su.ticker.C:
 			su.updateAllServerStats()
@@ -67,7 +67,7 @@ func (su *StatUpdater) Stop() {
 func (su *StatUpdater) updateAllServerStats() {
 	servers, err := su.serverSvc.GetAllServers()
 	if err != nil {
-		log.Printf("StatUpdater: Failed to query servers: %v", err)
+		log.Error().Err(err).Msg("StatUpdater: Failed to query servers")
 		return
 	}
 
@@ -79,21 +79,40 @@ func (su *StatUpdater) updateAllServerStats() {
 	}
 }
 
-// updateSingleServer fetches stats for one specific server.
 func (su *StatUpdater) updateSingleServer(server *models.Server) {
 	ctx := context.Background()
+	// FIX: Check for empty container ID before making the Docker API call
+	if server.DockerContainerID == "" {
+		log.Warn().Str("server_name", server.Name).Str("server_id", server.ID).Msg("StatUpdater: Skipping stats due to empty container ID")
+		return
+	}
+
 	stats, err := su.docker.GetContainerStats(ctx, server.DockerContainerID)
+
 	if err != nil {
-		if client.IsErrNotFound(err) && server.Status != "offline" {
-			log.Printf("StatUpdater: Container for %s (%s) not found, marking as offline.", server.Name, server.ID)
-			server.Status = "offline"
-			server.Resources = models.ResourceUsage{}
-			server.Players.Current = 0
+		if client.IsErrNotFound(err) {
+			// Container is gone. If our state doesn't reflect that, fix it.
+			if server.Status != "offline" {
+				log.Warn().Str("server_name", server.Name).Str("server_id", server.ID).Msg("StatUpdater: Container not found, marking as offline")
+				server.Status = "offline"
+				server.Resources = models.ResourceUsage{}
+				server.Players.Current = 0
+				// Fall through to update the DB.
+			} else {
+				// Already marked as offline, nothing to do.
+				return
+			}
+		} else {
+			// Some other transient error (e.g. container stopping, starting up).
+			// Don't update the DB, just wait for the next tick.
+			log.Warn().Err(err).Str("server_name", server.Name).Msg("StatUpdater: Non-fatal error getting stats")
+			return // <-- THE KEY FIX
 		}
-		// Don't log other errors as they are common when a container is stopping
 	} else {
-		// If we get stats, the container is running.
-		server.Status = "online"
+		// We got stats, so the container is online.
+		if server.Status != "online" {
+			server.Status = "online"
+		}
 		server.Resources.CPU = docker.CalculateCPUPercent(stats)
 		server.Resources.RAM = docker.CalculateRAMPercent(stats)
 		server.Resources.Storage = su.getDirectorySizePercentage(server.DataPath)
@@ -101,9 +120,11 @@ func (su *StatUpdater) updateSingleServer(server *models.Server) {
 		su.checkAndAlertForHighCPU(server)
 	}
 
+	// This part is now only reached if stats were successfully retrieved
+	// OR if the container was found to be missing and needed its status corrected.
 	err = su.serverSvc.UpdateServerStats(*server)
 	if err != nil {
-		log.Printf("StatUpdater: Failed to update server stats in DB for %s: %v", server.Name, err)
+		log.Error().Err(err).Str("server_name", server.Name).Msg("StatUpdater: Failed to update server stats in DB")
 	}
 }
 
@@ -138,7 +159,7 @@ func (su *StatUpdater) getDirectorySizePercentage(path string) int {
 		return nil
 	})
 	if err != nil {
-		log.Printf("StatUpdater: Could not calculate size of %s: %v", path, err)
+		log.Warn().Err(err).Str("path", path).Msg("StatUpdater: Could not calculate directory size")
 		return 0
 	}
 

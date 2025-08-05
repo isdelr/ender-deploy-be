@@ -7,6 +7,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 )
 
@@ -65,6 +66,16 @@ func (c *Client) GetContainerLogs(ctx context.Context, id string, follow bool) (
 // InspectContainer returns the JSON response from a container inspect.
 func (c *Client) InspectContainer(ctx context.Context, containerID string) (types.ContainerJSON, error) {
 	return c.cli.ContainerInspect(ctx, containerID)
+}
+
+// ImageInspectWithRaw returns the inspect data for an image.
+func (c *Client) ImageInspectWithRaw(ctx context.Context, imageID string) (types.ImageInspect, []byte, error) {
+	return c.cli.ImageInspectWithRaw(ctx, imageID)
+}
+
+// ImagePull pulls an image from a registry and returns a reader for the pull progress.
+func (c *Client) ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error) {
+	return c.cli.ImagePull(ctx, refStr, options)
 }
 
 // GetContainerStats returns a reader for the container's resource usage stats.
