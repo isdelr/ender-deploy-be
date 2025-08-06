@@ -109,6 +109,46 @@ func (h *ServerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *ServerHandler) Upload(w http.ResponseWriter, r *http.Request) {
+	// The maximum upload size (e.g., 500 MB)
+	const maxUploadSize = 500 * 1024 * 1024
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+
+	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
+		http.Error(w, "The uploaded file is too big. Please choose an file that's less than 500MB in size.", http.StatusBadRequest)
+		return
+	}
+
+	// Retrieve the file from form data
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "Invalid file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Retrieve other form fields
+	serverName := r.FormValue("name")
+	javaVersion := r.FormValue("javaVersion")
+	maxMemoryMB, _ := strconv.Atoi(r.FormValue("maxMemoryMB"))
+
+	if serverName == "" || javaVersion == "" || maxMemoryMB <= 0 {
+		http.Error(w, "Missing required fields: name, javaVersion, maxMemoryMB", http.StatusBadRequest)
+		return
+	}
+
+	newServer, err := h.service.CreateServerFromUpload(serverName, javaVersion, maxMemoryMB, file)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create server from upload")
+		http.Error(w, "Failed to create server: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(newServer)
+}
+
 // PerformAction handles state-changing actions like start, stop, restart.
 func (h *ServerHandler) PerformAction(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")

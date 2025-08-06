@@ -43,11 +43,29 @@ func NewBackupService(db *sql.DB, serverService ServerServiceProvider, eventServ
 	}
 }
 
-// CreateBackup creates a new backup for a server.
+// CreateBackup creates a new backup for a server. This version uses RCON for downtime-free backups.
 func (s *BackupService) CreateBackup(serverID, name string) (models.Backup, error) {
 	server, err := s.serverService.GetServerByID(serverID)
 	if err != nil {
 		return models.Backup{}, fmt.Errorf("could not find server: %w", err)
+	}
+
+	// If server is online, use RCON to safely save the world state first.
+	if server.Status == "online" {
+		log.Info().Str("server_id", serverID).Msg("Server is online, performing RCON save for backup.")
+		// 1. Turn off auto-saving to prevent file changes during backup
+		if _, err := s.serverService.SendCommandToServer(serverID, "save-off"); err != nil {
+			log.Warn().Err(err).Str("server_id", serverID).Msg("Failed to send 'save-off' before backup. Continuing anyway.")
+		}
+		// 2. Ensure save is turned back on when the function exits
+		defer s.serverService.SendCommandToServer(serverID, "save-on")
+
+		// 3. Force a save to flush all changes to disk
+		if _, err := s.serverService.SendCommandToServer(serverID, "save-all"); err != nil {
+			return models.Backup{}, fmt.Errorf("failed to save world via RCON before backup: %w", err)
+		}
+		// 4. Give the server a moment to write everything to disk
+		time.Sleep(5 * time.Second)
 	}
 
 	backup := models.Backup{
@@ -101,6 +119,7 @@ func (s *BackupService) CreateBackup(serverID, name string) (models.Backup, erro
 		return models.Backup{}, fmt.Errorf("failed to zip server data: %w", err)
 	}
 
+	// It's essential to close the zipWriter before stating the file to get the correct size
 	zipWriter.Close()
 	backupFile.Close()
 

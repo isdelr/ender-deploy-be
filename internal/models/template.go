@@ -6,105 +6,117 @@ import (
 
 // Template represents a blueprint for creating a new Minecraft server.
 type Template struct {
-	ID               string            `json:"id"`
-	Name             string            `json:"name"`
-	Description      string            `json:"description,omitempty"`
-	MinecraftVersion string            `json:"minecraftVersion"`
-	JavaVersion      string            `json:"javaVersion"`
-	ServerType       string            `json:"serverType"`           // e.g., Vanilla, Forge, Fabric
-	MinMemoryMB      int               `json:"minMemoryMB"`          // Renamed for clarity
-	MaxMemoryMB      int               `json:"maxMemoryMB"`          // Renamed for clarity
-	TagsJSON         string            `json:"-"`                    // Stored as JSON array string "[\"tag1\", \"tag2\"]"
-	JVMArgsJSON      string            `json:"-"`                    // Stored as JSON array string "[\"-Xmx...\", \"-Xms...\"]"
-	PropertiesJSON   string            `json:"-"`                    // Stored as JSON object string "{\"key\":\"value\"}"
-	Tags             []string          `json:"tags,omitempty"`       // Exposed to frontend
-	JVMArgs          []string          `json:"jvmArgs,omitempty"`    // Exposed to frontend
-	Properties       map[string]string `json:"properties,omitempty"` // Exposed to frontend
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Description      string `json:"description,omitempty"`
+	MinecraftVersion string `json:"minecraftVersion"`
+	JavaVersion      string `json:"javaVersion"`
+	ServerType       string `json:"serverType"`
+	ModpackType      string `json:"modpackType,omitempty"` // e.g., "CURSEFORGE", "FTB"
+	ModpackURL       string `json:"modpackURL,omitempty"`  // URL to the modpack page or file
+	MinMemoryMB      int    `json:"minMemoryMB"`
+	MaxMemoryMB      int    `json:"maxMemoryMB"`
+	IconURL          string `json:"iconURL,omitempty"` // New
+
+	// New direct properties
+	Difficulty string `json:"difficulty,omitempty"`
+
+	// JSON string fields for DB storage
+	TagsJSON          string `json:"-"`
+	JVMArgsJSON       string `json:"-"`
+	PropertiesJSON    string `json:"-"`
+	ModsJSON          string `json:"-"`
+	PluginsJSON       string `json:"-"`
+	OpsJSON           string `json:"-"`
+	WhitelistJSON     string `json:"-"`
+	DatapacksJSON     string `json:"-"` // New
+	ResourcePacksJSON string `json:"-"` // New
+	BannedPlayersJSON string `json:"-"` // New
+	BannedIPsJSON     string `json:"-"` // New
+
+	// Slice/Map fields for API interaction
+	Tags          []string          `json:"tags,omitempty"`
+	JVMArgs       []string          `json:"jvmArgs,omitempty"`
+	Properties    map[string]string `json:"properties,omitempty"`
+	Mods          []string          `json:"mods,omitempty"`
+	Plugins       []string          `json:"plugins,omitempty"`
+	Ops           []string          `json:"ops,omitempty"`
+	Whitelist     []string          `json:"whitelist,omitempty"`
+	Datapacks     []string          `json:"datapacks,omitempty"`     // New
+	ResourcePacks []string          `json:"resourcePacks,omitempty"` // New
+	BannedPlayers []string          `json:"bannedPlayers,omitempty"` // New
+	BannedIPs     []string          `json:"bannedIPs,omitempty"`     // New
 }
 
-// MarshalJSON custom marshaler to handle JSON fields
-func (t *Template) MarshalJSON() ([]byte, error) {
-	type Alias Template
-	return json.Marshal(&struct {
-		*Alias
-		Tags       []string          `json:"tags,omitempty"`
-		JVMArgs    []string          `json:"jvmArgs,omitempty"`
-		Properties map[string]string `json:"properties,omitempty"`
-	}{
-		Alias:      (*Alias)(t),
-		Tags:       t.GetTags(),
-		JVMArgs:    t.GetJVMArgs(),
-		Properties: t.GetProperties(),
-	})
+// PrepareForSave marshals all slice/map fields into their respective JSON strings for DB storage.
+func (t *Template) PrepareForSave() {
+	tagsBytes, _ := json.Marshal(t.Tags)
+	t.TagsJSON = string(tagsBytes)
+
+	jvmArgsBytes, _ := json.Marshal(t.JVMArgs)
+	t.JVMArgsJSON = string(jvmArgsBytes)
+
+	propertiesBytes, _ := json.Marshal(t.Properties)
+	t.PropertiesJSON = string(propertiesBytes)
+
+	modsBytes, _ := json.Marshal(t.Mods)
+	t.ModsJSON = string(modsBytes)
+
+	pluginsBytes, _ := json.Marshal(t.Plugins)
+	t.PluginsJSON = string(pluginsBytes)
+
+	opsBytes, _ := json.Marshal(t.Ops)
+	t.OpsJSON = string(opsBytes)
+
+	whitelistBytes, _ := json.Marshal(t.Whitelist)
+	t.WhitelistJSON = string(whitelistBytes)
+
+	datapacksBytes, _ := json.Marshal(t.Datapacks)
+	t.DatapacksJSON = string(datapacksBytes)
+
+	resourcePacksBytes, _ := json.Marshal(t.ResourcePacks)
+	t.ResourcePacksJSON = string(resourcePacksBytes)
+
+	bannedPlayersBytes, _ := json.Marshal(t.BannedPlayers)
+	t.BannedPlayersJSON = string(bannedPlayersBytes)
+
+	bannedIPsBytes, _ := json.Marshal(t.BannedIPs)
+	t.BannedIPsJSON = string(bannedIPsBytes)
 }
 
-// UnmarshalJSON custom unmarshaler to handle JSON fields
-func (t *Template) UnmarshalJSON(data []byte) error {
-	type Alias Template
-	aux := &struct {
-		Tags       []string          `json:"tags,omitempty"`
-		JVMArgs    []string          `json:"jvmArgs,omitempty"`
-		Properties map[string]string `json:"properties,omitempty"`
-		*Alias
-	}{
-		Alias: (*Alias)(t),
+// PrepareForAPI unmarshals all JSON string fields into their respective slice/map fields for API responses.
+func (t *Template) PrepareForAPI() {
+	if t.TagsJSON != "" {
+		json.Unmarshal([]byte(t.TagsJSON), &t.Tags)
 	}
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
+	if t.JVMArgsJSON != "" {
+		json.Unmarshal([]byte(t.JVMArgsJSON), &t.JVMArgs)
 	}
-	t.SetTags(aux.Tags)
-	t.SetJVMArgs(aux.JVMArgs)
-	t.SetProperties(aux.Properties)
-	return nil
-}
-
-// GetTags returns the tags as a slice of strings.
-func (t *Template) GetTags() []string {
-	if t.TagsJSON == "" {
-		return []string{}
+	if t.PropertiesJSON != "" {
+		json.Unmarshal([]byte(t.PropertiesJSON), &t.Properties)
 	}
-	var tags []string
-	json.Unmarshal([]byte(t.TagsJSON), &tags)
-	return tags
-}
-
-// SetTags sets the JSON string for tags.
-func (t *Template) SetTags(tags []string) {
-	t.Tags = tags
-	jsonBytes, _ := json.Marshal(tags)
-	t.TagsJSON = string(jsonBytes)
-}
-
-// GetJVMArgs returns the JVM arguments as a slice of strings.
-func (t *Template) GetJVMArgs() []string {
-	if t.JVMArgsJSON == "" {
-		return []string{}
+	if t.ModsJSON != "" {
+		json.Unmarshal([]byte(t.ModsJSON), &t.Mods)
 	}
-	var args []string
-	json.Unmarshal([]byte(t.JVMArgsJSON), &args)
-	return args
-}
-
-// SetJVMArgs sets the JSON string for JVM args.
-func (t *Template) SetJVMArgs(args []string) {
-	t.JVMArgs = args
-	jsonBytes, _ := json.Marshal(args)
-	t.JVMArgsJSON = string(jsonBytes)
-}
-
-// GetProperties returns the server properties as a map.
-func (t *Template) GetProperties() map[string]string {
-	if t.PropertiesJSON == "" {
-		return make(map[string]string)
+	if t.PluginsJSON != "" {
+		json.Unmarshal([]byte(t.PluginsJSON), &t.Plugins)
 	}
-	var properties map[string]string
-	json.Unmarshal([]byte(t.PropertiesJSON), &properties)
-	return properties
-}
-
-// SetProperties sets the JSON string for properties.
-func (t *Template) SetProperties(properties map[string]string) {
-	t.Properties = properties
-	jsonBytes, _ := json.Marshal(properties)
-	t.PropertiesJSON = string(jsonBytes)
+	if t.OpsJSON != "" {
+		json.Unmarshal([]byte(t.OpsJSON), &t.Ops)
+	}
+	if t.WhitelistJSON != "" {
+		json.Unmarshal([]byte(t.WhitelistJSON), &t.Whitelist)
+	}
+	if t.DatapacksJSON != "" {
+		json.Unmarshal([]byte(t.DatapacksJSON), &t.Datapacks)
+	}
+	if t.ResourcePacksJSON != "" {
+		json.Unmarshal([]byte(t.ResourcePacksJSON), &t.ResourcePacks)
+	}
+	if t.BannedPlayersJSON != "" {
+		json.Unmarshal([]byte(t.BannedPlayersJSON), &t.BannedPlayers)
+	}
+	if t.BannedIPsJSON != "" {
+		json.Unmarshal([]byte(t.BannedIPsJSON), &t.BannedIPs)
+	}
 }

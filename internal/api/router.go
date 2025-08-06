@@ -67,6 +67,7 @@ func NewRouter(hub *websocket.Hub, serverService services.ServerServiceProvider,
 			r.Route("/servers", func(r chi.Router) {
 				r.Get("/", serverHandler.GetAll)
 				r.Post("/", serverHandler.Create)
+				r.Post("/upload", serverHandler.Upload)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", serverHandler.Get)
 					r.Put("/", serverHandler.Update)

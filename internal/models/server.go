@@ -19,8 +19,9 @@ type Server struct {
 	IPAddress         string         `json:"ipAddress"`
 	Modpack           *ModpackInfo   `json:"modpack,omitempty"`
 	TemplateID        string         `json:"templateId,omitempty"`
-	DockerContainerID string         `json:"-"` // Internal use
-	DataPath          string         `json:"-"` // Internal use
+	DockerContainerID string         `json:"-"` // Internal use, not exposed to client
+	RCONPassword      string         `json:"-"` // Internal use, added for server-specific RCON
+	DataPath          string         `json:"-"` // Internal use, not exposed to client
 	CreatedAt         time.Time      `json:"createdAt"`
 	Settings          ServerSettings `json:"settings,omitempty"`
 }

@@ -1,10 +1,12 @@
 package services
 
 import (
+	"archive/zip"
 	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -28,8 +30,9 @@ import (
 )
 
 const (
-	RCONPort     = "25575"
-	RCONPassword = "ender-deploy-rcon-password" // This should be configurable per server
+	RCONPort = "25575"
+
+// RCONPassword is now generated per-server for security.
 )
 
 // ServerServiceProvider defines the interface for server services.
@@ -52,6 +55,7 @@ type ServerServiceProvider interface {
 	GetResourceHistory(serverID string) ([]models.ResourceDataPoint, error)
 	GetOnlinePlayers(serverID string) ([]models.OnlinePlayer, error)
 	ManagePlayer(serverID, action, playerName, reason string) error
+	CreateServerFromUpload(name, javaVersion string, maxMemoryMB int, fileReader io.Reader) (models.Server, error)
 }
 
 // ServerService provides business logic for server management.
@@ -75,14 +79,8 @@ func NewServerService(db *sql.DB, docker *docker.Client, hub *websocket.Hub, tem
 		serverDataPath:  serverDataPath,
 	}
 }
-
 func (s *ServerService) GetAllServers() ([]models.Server, error) {
-	rows, err := s.db.Query(`
-		SELECT id, name, status, port, minecraft_version, java_version,
-		       players_current, players_max, cpu_usage, ram_usage, storage_usage,
-		       ip_address, modpack_name, modpack_version, docker_container_id, data_path
-		FROM servers
-	`)
+	rows, err := s.db.Query("SELECT id, name, status, port, minecraft_version, java_version, players_current, players_max, cpu_usage, ram_usage, storage_usage, ip_address, modpack_name, modpack_version, docker_container_id, data_path, rcon_password FROM servers")
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +89,7 @@ func (s *ServerService) GetAllServers() ([]models.Server, error) {
 	var servers []models.Server
 	for rows.Next() {
 		var srv models.Server
-		var modpackName, modpackVersion, dockerContainerID, dataPath sql.NullString
+		var modpackName, modpackVersion, dockerContainerID, dataPath, rconPassword sql.NullString
 		var playersCurrent, playersMax, storageUsage sql.NullInt64
 		var cpuUsage, ramUsage sql.NullFloat64
 		var port sql.NullInt32
@@ -100,7 +98,7 @@ func (s *ServerService) GetAllServers() ([]models.Server, error) {
 		err := rows.Scan(
 			&srv.ID, &srv.Name, &srv.Status, &port, &srv.MinecraftVersion, &srv.JavaVersion,
 			&playersCurrent, &playersMax, &cpuUsage, &ramUsage, &storageUsage,
-			&ipAddress, &modpackName, &modpackVersion, &dockerContainerID, &dataPath,
+			&ipAddress, &modpackName, &modpackVersion, &dockerContainerID, &dataPath, &rconPassword,
 		)
 		if err != nil {
 			return nil, err
@@ -116,6 +114,7 @@ func (s *ServerService) GetAllServers() ([]models.Server, error) {
 		srv.Resources.Storage = int(storageUsage.Int64)
 		srv.DockerContainerID = dockerContainerID.String
 		srv.DataPath = dataPath.String
+		srv.RCONPassword = rconPassword.String
 
 		if modpackName.Valid && modpackVersion.Valid {
 			srv.Modpack = &models.ModpackInfo{Name: modpackName.String, Version: modpackVersion.String}
@@ -128,21 +127,21 @@ func (s *ServerService) GetAllServers() ([]models.Server, error) {
 // GetServerByID retrieves a single server by its ID.
 func (s *ServerService) GetServerByID(id string) (models.Server, error) {
 	var srv models.Server
-	var modpackName, modpackVersion, containerID, dataPath, templateID, ipAddress sql.NullString
+	var modpackName, modpackVersion, containerID, dataPath, templateID, ipAddress, rconPassword sql.NullString
 	// Use nullable types to scan from DB
 	var playersCurrent, playersMax, storageUsage sql.NullInt64
 	var cpuUsage, ramUsage sql.NullFloat64
 	var port sql.NullInt32
 
 	row := s.db.QueryRow(`
-		SELECT id, name, status, port, minecraft_version, java_version,
-		       players_current, players_max, cpu_usage, ram_usage, storage_usage,
-		       ip_address, modpack_name, modpack_version, docker_container_id, data_path, template_id
-		FROM servers WHERE id = ?`, id)
+	SELECT id, name, status, port, minecraft_version, java_version,
+	       players_current, players_max, cpu_usage, ram_usage, storage_usage,
+	       ip_address, modpack_name, modpack_version, docker_container_id, data_path, template_id, rcon_password
+	FROM servers WHERE id = ?`, id)
 	err := row.Scan(
 		&srv.ID, &srv.Name, &srv.Status, &port, &srv.MinecraftVersion, &srv.JavaVersion,
 		&playersCurrent, &playersMax, &cpuUsage, &ramUsage, &storageUsage,
-		&ipAddress, &modpackName, &modpackVersion, &containerID, &dataPath, &templateID)
+		&ipAddress, &modpackName, &modpackVersion, &containerID, &dataPath, &templateID, &rconPassword)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return models.Server{}, fmt.Errorf("server with id %s not found", id)
@@ -160,6 +159,7 @@ func (s *ServerService) GetServerByID(id string) (models.Server, error) {
 	srv.DockerContainerID = containerID.String
 	srv.DataPath = dataPath.String
 	srv.TemplateID = templateID.String
+	srv.RCONPassword = rconPassword.String
 
 	if modpackName.Valid && modpackVersion.Valid {
 		srv.Modpack = &models.ModpackInfo{Name: modpackName.String, Version: modpackVersion.String}
@@ -200,6 +200,9 @@ func (s *ServerService) CreateServerFromTemplate(name, templateId string) (model
 		log.Info().Str("image", imageName).Msg("Image found locally.")
 	}
 
+	// Generate a unique RCON password for this server
+	rconPassword := "ender-rcon-" + uuid.New().String()
+
 	server := models.Server{
 		ID:               uuid.New().String(),
 		Name:             name,
@@ -207,6 +210,7 @@ func (s *ServerService) CreateServerFromTemplate(name, templateId string) (model
 		MinecraftVersion: template.MinecraftVersion,
 		JavaVersion:      template.JavaVersion,
 		TemplateID:       template.ID,
+		RCONPassword:     rconPassword,
 	}
 
 	// --- OS-INDEPENDENT PATH HANDLING ---
@@ -220,7 +224,7 @@ func (s *ServerService) CreateServerFromTemplate(name, templateId string) (model
 	}
 	// --- END ---
 
-	envVars, err := s.buildEnvVarsFromTemplate(template, name)
+	envVars, err := s.buildEnvVarsFromTemplate(template, name, rconPassword)
 	if err != nil {
 		return server, fmt.Errorf("failed to build environment variables: %w", err)
 	}
@@ -270,7 +274,7 @@ func (s *ServerService) CreateServerFromTemplate(name, templateId string) (model
 	server.DockerContainerID = resp.ID
 	server.DataPath = absDataPath
 
-	props := template.GetProperties()
+	props := template.Properties
 	maxPlayers := 20 // default
 	if mpStr, ok := props["max-players"]; ok {
 		if mp, err := strconv.Atoi(mpStr); err == nil {
@@ -280,15 +284,15 @@ func (s *ServerService) CreateServerFromTemplate(name, templateId string) (model
 	server.Players.Max = maxPlayers
 
 	stmt, err := s.db.Prepare(`
-		INSERT INTO servers(id, name, status, minecraft_version, java_version, docker_container_id, data_path, template_id, port, ip_address, players_max)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`)
+	INSERT INTO servers(id, name, status, minecraft_version, java_version, docker_container_id, data_path, template_id, port, ip_address, players_max, rcon_password)
+	VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`)
 	if err != nil {
 		return server, fmt.Errorf("failed to prepare db statement: %w", err)
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(server.ID, server.Name, server.Status, server.MinecraftVersion, server.JavaVersion, server.DockerContainerID, server.DataPath, server.TemplateID, server.Port, server.IPAddress, maxPlayers)
+	_, err = stmt.Exec(server.ID, server.Name, server.Status, server.MinecraftVersion, server.JavaVersion, server.DockerContainerID, server.DataPath, server.TemplateID, server.Port, server.IPAddress, maxPlayers, server.RCONPassword)
 	if err != nil {
 		s.docker.RemoveContainer(context.Background(), server.DockerContainerID) // Cleanup container
 		return server, fmt.Errorf("failed to write server to database: %w", err)
@@ -302,27 +306,247 @@ func (s *ServerService) CreateServerFromTemplate(name, templateId string) (model
 	return newServer, nil
 }
 
+// CreateServerFromUpload creates a server from an uploaded zip file.
+func (s *ServerService) CreateServerFromUpload(name, javaVersion string, maxMemoryMB int, fileReader io.Reader) (models.Server, error) {
+	// Generate a unique RCON password for this server
+	rconPassword := "ender-rcon-" + uuid.New().String()
+
+	server := models.Server{
+		ID:               uuid.New().String(),
+		Name:             name,
+		Status:           "offline",
+		MinecraftVersion: "Unknown", // We can't know this from a zip
+		JavaVersion:      javaVersion,
+		RCONPassword:     rconPassword,
+	}
+
+	server.DataPath = filepath.Join(s.serverDataPath, server.ID)
+	absDataPath, err := filepath.Abs(server.DataPath)
+	if err != nil {
+		return server, fmt.Errorf("failed to get absolute path for server data: %w", err)
+	}
+	if err := os.MkdirAll(absDataPath, 0755); err != nil {
+		return server, fmt.Errorf("failed to create server data directory: %w", err)
+	}
+
+	// Unzip the contents into the new data path.
+	// This requires creating a temporary file to use with zip.OpenReader
+	tmpFile, err := os.CreateTemp("", "upload-*.zip")
+	if err != nil {
+		return models.Server{}, fmt.Errorf("failed to create temp file for upload: %w", err)
+	}
+	defer os.Remove(tmpFile.Name()) // Clean up temp file
+
+	_, err = io.Copy(tmpFile, fileReader)
+	if err != nil {
+		return models.Server{}, fmt.Errorf("failed to copy uploaded file to temp file: %w", err)
+	}
+	tmpFile.Close() // Close so zip.OpenReader can use it
+
+	zipReader, err := zip.OpenReader(tmpFile.Name())
+	if err != nil {
+		return models.Server{}, fmt.Errorf("failed to open uploaded zip archive: %w", err)
+	}
+	defer zipReader.Close()
+
+	for _, f := range zipReader.File {
+		fpath := filepath.Join(absDataPath, f.Name)
+		if !strings.HasPrefix(fpath, filepath.Clean(absDataPath)+string(os.PathSeparator)) {
+			return models.Server{}, fmt.Errorf("invalid file path in zip: %s", fpath)
+		}
+
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(fpath, os.ModePerm)
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
+			return models.Server{}, err
+		}
+
+		outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		if err != nil {
+			return models.Server{}, err
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			outFile.Close()
+			return models.Server{}, err
+		}
+
+		_, err = io.Copy(outFile, rc)
+		outFile.Close()
+		rc.Close()
+
+		if err != nil {
+			return models.Server{}, err
+		}
+	}
+
+	// Similar container setup as CreateServerFromTemplate, but with fewer specific env vars
+	ctx := context.Background()
+	imageName := fmt.Sprintf("itzg/minecraft-server:java%s", javaVersion)
+	_, _, err = s.docker.ImageInspectWithRaw(ctx, imageName)
+	if err != nil {
+		if client.IsErrNotFound(err) {
+			log.Info().Str("image", imageName).Msg("Image not found locally. Pulling from Docker Hub...")
+			puller, pullErr := s.docker.ImagePull(ctx, imageName, image.PullOptions{})
+			if pullErr != nil {
+				return models.Server{}, fmt.Errorf("failed to start image pull: %w", pullErr)
+			}
+			defer puller.Close()
+			// This will stream the pull progress to your backend's stdout, which is useful for debugging.
+			io.Copy(os.Stdout, puller)
+			log.Info().Str("image", imageName).Msg("Image pulled successfully.")
+		} else {
+			return models.Server{}, fmt.Errorf("failed to inspect docker image '%s': %w", imageName, err)
+		}
+	} else {
+		log.Info().Str("image", imageName).Msg("Image found locally.")
+	}
+
+	envVars := []string{
+		"EULA=TRUE",
+		"MEMORY=" + strconv.Itoa(maxMemoryMB) + "M",
+		"ENABLE_RCON=true",
+		"RCON_PORT=" + RCONPort,
+		"RCON_PASSWORD=" + rconPassword,
+	}
+
+	// ... (The rest is very similar to CreateServerFromTemplate: port finding, container creation, DB insertion)
+	gamePort, err := FindAvailablePort(25565)
+	if err != nil {
+		return models.Server{}, err
+	}
+	rconPort, err := FindAvailablePort(25575)
+	if err != nil {
+		return models.Server{}, err
+	}
+	server.Port = gamePort
+	server.IPAddress = fmt.Sprintf("127.0.0.1:%d", gamePort)
+
+	resp, err := s.docker.CreateContainer(context.Background(),
+		&container.Config{
+			Image:        imageName,
+			Env:          envVars,
+			Tty:          true,
+			ExposedPorts: nat.PortSet{"25565/tcp": {}, "25575/tcp": {}},
+			Labels:       map[string]string{"com.ender-deploy.managed": "true", "com.ender-deploy.serverId": server.ID},
+		},
+		&container.HostConfig{
+			Mounts: []mount.Mount{{Type: mount.TypeBind, Source: absDataPath, Target: "/data"}},
+			PortBindings: nat.PortMap{
+				"25565/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: strconv.Itoa(gamePort)}},
+				"25575/tcp": []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: strconv.Itoa(rconPort)}},
+			},
+		},
+		"enderdeploy_"+server.ID,
+	)
+	if err != nil {
+		return models.Server{}, err
+	}
+	server.DockerContainerID = resp.ID
+
+	// Save to DB
+	stmt, err := s.db.Prepare(`
+	INSERT INTO servers(id, name, status, minecraft_version, java_version, docker_container_id, data_path, port, ip_address, players_max, rcon_password)
+	VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`)
+	if err != nil {
+		return models.Server{}, err
+	}
+	defer stmt.Close()
+	_, err = stmt.Exec(server.ID, server.Name, server.Status, server.MinecraftVersion, server.JavaVersion, server.DockerContainerID, server.DataPath, server.Port, server.IPAddress, 20, server.RCONPassword) // Default max players
+	if err != nil {
+		s.docker.RemoveContainer(context.Background(), server.DockerContainerID)
+		return models.Server{}, err
+	}
+
+	newServer, _ := s.GetServerByID(server.ID)
+	s.broadcastServerUpdate(newServer)
+	s.eventService.CreateEvent("server.upload", "info", fmt.Sprintf("Server '%s' was created from an upload.", newServer.Name), &newServer.ID)
+	return newServer, nil
+}
+
 // buildEnvVarsFromTemplate creates a slice of "KEY=VALUE" strings for Docker.
-func (s *ServerService) buildEnvVarsFromTemplate(template models.Template, serverName string) ([]string, error) {
+func (s *ServerService) buildEnvVarsFromTemplate(template models.Template, serverName, rconPassword string) ([]string, error) {
 	env := []string{
 		"EULA=TRUE",
-		"TYPE=" + template.ServerType,
-		"VERSION=" + template.MinecraftVersion,
 		"MEMORY=" + strconv.Itoa(template.MaxMemoryMB) + "M",
 		"MOTD=" + serverName,
 		"ENABLE_RCON=true",
 		"RCON_PORT=" + RCONPort,
-		"RCON_PASSWORD=" + RCONPassword,
+		"RCON_PASSWORD=" + rconPassword, // Use generated password
+	}
+
+	// Correctly handle modpacks vs. standard servers
+	if template.ModpackType != "" && template.ModpackURL != "" {
+		// For modpacks, TYPE is the modloader (e.g., FORGE, FABRIC).
+		env = append(env, "TYPE="+template.ServerType)
+
+		switch template.ModpackType {
+		case "CURSEFORGE":
+			env = append(env, "CF_PAGE_URL="+template.ModpackURL)
+		case "FTB":
+			// This assumes the URL is actually the FTB App Pack ID
+			env = append(env, "FTB_MODPACK_ID="+template.ModpackURL)
+		case "MODRINTH":
+			env = append(env, "MODRINTH_PROJECT="+template.ModpackURL)
+		}
+	} else {
+		// For standard servers, TYPE is Paper, Spigot, Forge, etc.
+		env = append(env, "TYPE="+template.ServerType)
+		env = append(env, "VERSION="+template.MinecraftVersion)
+	}
+
+	// Add icon URL if provided
+	if template.IconURL != "" {
+		env = append(env, "ICON="+template.IconURL)
+	}
+
+	// Add individual mods and plugins
+	if len(template.Mods) > 0 {
+		env = append(env, "MODS="+strings.Join(template.Mods, ","))
+	}
+	if len(template.Plugins) > 0 {
+		env = append(env, "PLUGINS="+strings.Join(template.Plugins, ","))
+	}
+
+	// Add datapacks and resource packs
+	if len(template.Datapacks) > 0 {
+		env = append(env, "DATAPACKS="+strings.Join(template.Datapacks, ","))
+	}
+	if len(template.ResourcePacks) > 0 {
+		env = append(env, "RESOURCE_PACKS="+strings.Join(template.ResourcePacks, ","))
+	}
+
+	// Add other settings
+	if template.Difficulty != "" {
+		env = append(env, "DIFFICULTY="+template.Difficulty)
+	}
+	if len(template.Ops) > 0 {
+		env = append(env, "OPS="+strings.Join(template.Ops, ","))
+	}
+	if len(template.Whitelist) > 0 {
+		env = append(env, "WHITELIST="+strings.Join(template.Whitelist, ","))
+		env = append(env, "ENFORCE_WHITELIST=TRUE")
+	}
+	if len(template.BannedPlayers) > 0 {
+		env = append(env, "BANNED_PLAYERS="+strings.Join(template.BannedPlayers, ","))
+	}
+	if len(template.BannedIPs) > 0 {
+		env = append(env, "BANNED_IPS="+strings.Join(template.BannedIPs, ","))
 	}
 
 	if len(template.JVMArgs) > 0 {
 		env = append(env, "JVM_ARGS="+strings.Join(template.JVMArgs, " "))
 	}
 
-	properties := template.GetProperties()
-	for key, val := range properties {
+	// Convert server.properties map to individual ENV vars
+	for key, val := range template.Properties {
 		envKey := "CFG_" + strings.ReplaceAll(strings.ToUpper(key), "-", "_")
-		env = append(env, fmt.Sprintf("%s=%v", envKey, val))
+		env = append(env, fmt.Sprintf("%s=%s", envKey, val))
 	}
 
 	return env, nil
@@ -465,9 +689,9 @@ func (s *ServerService) UpdateServerStats(server models.Server) error {
 
 	// Update the main servers table
 	_, err = tx.Exec(`
-		UPDATE servers
-		SET status = ?, players_current = ?, cpu_usage = ?, ram_usage = ?, storage_usage = ?
-		WHERE id = ?`,
+	UPDATE servers
+	SET status = ?, players_current = ?, cpu_usage = ?, ram_usage = ?, storage_usage = ?
+	WHERE id = ?`,
 		server.Status, server.Players.Current, server.Resources.CPU, server.Resources.RAM, server.Resources.Storage, server.ID)
 	if err != nil {
 		return err
@@ -475,8 +699,8 @@ func (s *ServerService) UpdateServerStats(server models.Server) error {
 
 	// Insert into history table
 	_, err = tx.Exec(`
-		INSERT INTO resource_history (server_id, cpu_usage, ram_usage, players_current)
-		VALUES (?, ?, ?, ?)`,
+	INSERT INTO resource_history (server_id, cpu_usage, ram_usage, players_current)
+	VALUES (?, ?, ?, ?)`,
 		server.ID, server.Resources.CPU, server.Resources.RAM, server.Players.Current)
 	if err != nil {
 		return err
@@ -513,9 +737,22 @@ func (s *ServerService) SendCommandToServer(serverID, command string) (string, e
 	}
 	rconAddr := "127.0.0.1:" + rconPortBinding[0].HostPort
 
-	conn, err := rcon.Dial(rconAddr, RCONPassword)
-	if err != nil {
-		return "", fmt.Errorf("could not connect via rcon: %w", err)
+	var conn *rcon.Conn
+	var dialErr error
+
+	// FIX: Add a retry loop to handle the race condition where the server is
+	// 'online' but RCON is not yet ready to accept connections.
+	for i := 0; i < 3; i++ {
+		conn, dialErr = rcon.Dial(rconAddr, server.RCONPassword)
+		if dialErr == nil {
+			break // Success
+		}
+		log.Warn().Err(dialErr).Str("server_id", serverID).Int("attempt", i+1).Msg("RCON connection attempt failed, retrying...")
+		time.Sleep(2 * time.Second)
+	}
+
+	if dialErr != nil {
+		return "", fmt.Errorf("could not connect via rcon after multiple attempts: %w", dialErr)
 	}
 	defer conn.Close()
 
@@ -536,7 +773,6 @@ func (s *ServerService) SendCommandToServer(serverID, command string) (string, e
 }
 
 // StreamServerLogs streams the logs of a container to a websocket client.
-// The context passed in is from the HTTP request, which is cancelled on client disconnect.
 func (s *ServerService) StreamServerLogs(ctx context.Context, serverID string, sendChan chan []byte) {
 	server, err := s.GetServerByID(serverID)
 	if err != nil {
@@ -544,34 +780,27 @@ func (s *ServerService) StreamServerLogs(ctx context.Context, serverID string, s
 		return
 	}
 
-	// Do not create a new context; use the one that was passed in.
-	// Its cancellation will signal that the client has disconnected.
-
 	logReader, err := s.docker.GetContainerLogs(ctx, server.DockerContainerID, true)
 	if err != nil {
-		// This error is expected if the context is already cancelled (client disconnected before logs could be fetched).
-		if err != context.Canceled {
+		// FIX: Use errors.Is to correctly handle wrapped context cancellation errors.
+		// This prevents logging a normal client disconnect as a server error.
+		if !errors.Is(err, context.Canceled) {
 			log.Error().Err(err).Str("server_id", serverID).Msg("Failed to get container logs")
 		}
 		return
 	}
 	defer logReader.Close()
 
-	// Stream logs line by line
 	scanner := bufio.NewScanner(logReader)
 	for scanner.Scan() {
-		// Construct a WebSocket message
 		wsMsg := websocket.Message{
 			Action:  "log_message",
 			Payload: scanner.Text(),
 		}
 		jsonMsg, _ := json.Marshal(wsMsg)
 
-		// This select block now correctly uses the client's connection context for cancellation.
-		// It will block until one of the cases is ready.
 		select {
 		case <-ctx.Done():
-			// The client's connection was closed. Stop streaming.
 			log.Info().Str("server_id", serverID).Msg("Client disconnected, stopping log stream.")
 			return
 		case sendChan <- jsonMsg:
@@ -580,8 +809,8 @@ func (s *ServerService) StreamServerLogs(ctx context.Context, serverID string, s
 	}
 
 	if err := scanner.Err(); err != nil {
-		// Don't log an error if it was caused by the context being canceled.
-		if err != context.Canceled {
+		// FIX: Use errors.Is here as well for consistency.
+		if !errors.Is(err, context.Canceled) {
 			log.Error().Err(err).Str("server_id", serverID).Msg("Error reading logs from container")
 		}
 	}
@@ -613,7 +842,6 @@ func FindAvailablePort(startPort int) (int, error) {
 	}
 	return 0, fmt.Errorf("no available ports found")
 }
-
 func (s *ServerService) GetDashboardStatistics() (models.DashboardStats, error) {
 	servers, err := s.GetAllServers()
 	if err != nil {
@@ -637,12 +865,12 @@ func (s *ServerService) GetDashboardStatistics() (models.DashboardStats, error) 
 	stats.SystemHealth = 99.5
 
 	rows, err := s.db.Query(`
-        SELECT timestamp, SUM(cpu_usage) as total_cpu, SUM(ram_usage) as total_ram, SUM(players_current) as total_players
-        FROM resource_history
-        WHERE timestamp >= ?
-        GROUP BY strftime('%Y-%m-%d %H', timestamp)
-        ORDER BY timestamp ASC
-    `, time.Now().Add(-24*time.Hour))
+    SELECT timestamp, SUM(cpu_usage) as total_cpu, SUM(ram_usage) as total_ram, SUM(players_current) as total_players
+    FROM resource_history
+    WHERE timestamp >= ?
+    GROUP BY strftime('%Y-%m-%d %H', timestamp)
+    ORDER BY timestamp ASC
+`, time.Now().Add(-24*time.Hour))
 
 	if err != nil {
 		return stats, err
@@ -669,12 +897,8 @@ func (s *ServerService) GetDashboardStatistics() (models.DashboardStats, error) 
 }
 
 // GetResourceHistory gets recent resource usage for a specific server.
-func (s *ServerService) GetResourceHistory(serverID string) ([]models.ResourceDataPoint, error) {
-	rows, err := s.db.Query(`
-		SELECT timestamp, cpu_usage, ram_usage, players_current
-		FROM resource_history
-		WHERE server_id = ? AND timestamp >= ?
-		ORDER BY timestamp ASC`, serverID, time.Now().Add(-30*time.Minute))
+func (s ServerService) GetResourceHistory(serverID string) ([]models.ResourceDataPoint, error) {
+	rows, err := s.db.Query("SELECT timestamp, cpu_usage, ram_usage, players_current FROM resource_history WHERE server_id = ? AND timestamp >= ? ORDER BY timestamp ASC, serverID, time.Now().Add(-30time.Minute)")
 	if err != nil {
 		return nil, err
 	}

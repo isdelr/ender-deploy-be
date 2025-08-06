@@ -59,7 +59,7 @@ func (c *Client) GetContainerLogs(ctx context.Context, id string, follow bool) (
 		ShowStderr: true,
 		Follow:     follow,
 		Timestamps: true,
-		Tail:       "100", // Get last 100 lines
+		Tail:       "500", // Get last 500 lines
 	})
 }
 
