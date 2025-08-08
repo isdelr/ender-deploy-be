@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ type TemplateHandler struct {
 }
 
 // NewTemplateHandler creates a new TemplateHandler.
+// FIX: Corrected TplServiceProvider to TemplateServiceProvider
 func NewTemplateHandler(service services.TemplateServiceProvider) *TemplateHandler {
 	return &TemplateHandler{service: service}
 }
@@ -48,20 +50,53 @@ func (h *TemplateHandler) Get(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(template)
 }
 
-// Create handles the request to create a new template.
+// Create handles the request to create a new template from an uploaded zip file.
 func (h *TemplateHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var template models.Template
-	if err := json.NewDecoder(r.Body).Decode(&template); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	// The maximum upload size (e.g., 500 MB)
+	const maxUploadSize = 500 * 1024 * 1024
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+
+	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
+		http.Error(w, "The uploaded file is too big or the form is invalid.", http.StatusBadRequest)
 		return
 	}
 
-	template.ID = uuid.New().String()
-
-	newTemplate, err := h.service.CreateTemplate(template)
+	// Retrieve the file from form data
+	file, _, err := r.FormFile("file")
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to create template")
-		http.Error(w, "Failed to create template", http.StatusInternalServerError)
+		http.Error(w, "Invalid file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Retrieve other form fields to build the template
+	name := r.FormValue("name")
+	description := r.FormValue("description")
+	javaVersion := r.FormValue("javaVersion")
+	minecraftVersion := r.FormValue("minecraftVersion")
+	serverExecutable := r.FormValue("serverExecutable")
+	maxMemoryMB, _ := strconv.Atoi(r.FormValue("maxMemoryMB"))
+
+	if name == "" || javaVersion == "" || serverExecutable == "" || maxMemoryMB <= 0 {
+		http.Error(w, "Missing required fields: name, javaVersion, serverExecutable, maxMemoryMB", http.StatusBadRequest)
+		return
+	}
+
+	template := models.Template{
+		ID:               uuid.New().String(),
+		Name:             name,
+		Description:      description,
+		JavaVersion:      javaVersion,
+		MinecraftVersion: minecraftVersion,
+		ServerType:       "custom-zip", // To indicate it's from a zip
+		MaxMemoryMB:      maxMemoryMB,
+	}
+
+	// The service layer will handle saving the file and creating the template DB entry.
+	newTemplate, err := h.service.CreateTemplate(template, serverExecutable, file)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create template from upload")
+		http.Error(w, "Failed to create template: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 

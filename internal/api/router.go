@@ -1,3 +1,4 @@
+// Path: ender-deploy-be/internal/api/router.go
 package api
 
 import (
@@ -62,12 +63,14 @@ func NewRouter(hub *websocket.Hub, serverService services.ServerServiceProvider,
 			// Dashboard & Events
 			r.Get("/dashboard/stats", serverHandler.GetDashboardStats)
 			r.Get("/events", eventHandler.GetRecent)
+			r.Get("/system-stats", serverHandler.GetSystemResourceStats)
 
 			// REST API endpoints for servers
 			r.Route("/servers", func(r chi.Router) {
 				r.Get("/", serverHandler.GetAll)
 				r.Post("/", serverHandler.Create)
 				r.Post("/upload", serverHandler.Upload)
+				r.Post("/upload/list-contents", serverHandler.ListZipContents)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", serverHandler.Get)
 					r.Put("/", serverHandler.Update)

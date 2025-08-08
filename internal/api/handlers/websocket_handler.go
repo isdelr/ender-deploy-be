@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
@@ -13,15 +16,18 @@ import (
 
 // WebSocketHandler handles upgrading HTTP connections to WebSocket connections.
 type WebSocketHandler struct {
-	hub           *ws.Hub
-	serverService services.ServerServiceProvider
+	hub              *ws.Hub
+	serverService    services.ServerServiceProvider
+	logStreamCancels map[*ws.Client]context.CancelFunc
+	mu               sync.Mutex
 }
 
 // NewWebSocketHandler creates a new WebSocketHandler.
 func NewWebSocketHandler(hub *ws.Hub, serverService services.ServerServiceProvider) *WebSocketHandler {
 	return &WebSocketHandler{
-		hub:           hub,
-		serverService: serverService,
+		hub:              hub,
+		serverService:    serverService,
+		logStreamCancels: make(map[*ws.Client]context.CancelFunc),
 	}
 }
 
@@ -29,8 +35,7 @@ var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		// Allow all connections for development.
-		// In production, you should validate the origin.
+		// Allow all origins (consider tightening this in production).
 		return true
 	},
 }
@@ -43,18 +48,41 @@ func (h *WebSocketHandler) Serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Support both /ws/servers/{id} and /ws/global routes.
 	serverID := chi.URLParam(r, "id")
+	if serverID == "" {
+		serverID = "global"
+	}
+
 	client := ws.NewClient(h.hub, conn, serverID)
 	h.hub.Register <- client
 
-	// If the connection is for a specific server, start streaming its logs.
-	// We pass the request's context, which gets cancelled when the client disconnects.
-	if client.ServerID != "" {
-		go h.serverService.StreamServerLogs(r.Context(), client.ServerID, client.Send)
-	}
+	var wg sync.WaitGroup
+	wg.Add(2)
 
-	go client.WritePump()
-	go client.ReadPump(h.handleIncomingWSMessage)
+	go func() {
+		defer wg.Done()
+		client.WritePump()
+	}()
+	go func() {
+		defer wg.Done()
+		client.ReadPump(h.handleIncomingWSMessage)
+	}()
+
+	// Cleanup on disconnect.
+	go func() {
+		wg.Wait()
+
+		h.mu.Lock()
+		if cancel, ok := h.logStreamCancels[client]; ok {
+			log.Info().Str("client_id", client.ServerID).Msg("Client disconnected, cancelling associated log stream.")
+			cancel()
+			delete(h.logStreamCancels, client)
+		}
+		h.mu.Unlock()
+
+		h.hub.Unregister <- client
+	}()
 }
 
 // handleIncomingWSMessage processes messages received from a websocket client.
@@ -66,28 +94,69 @@ func (h *WebSocketHandler) handleIncomingWSMessage(client *ws.Client, message []
 	}
 
 	switch msg.Action {
-	case "send_command":
-		if client.ServerID == "" {
-			log.Warn().Msg("Client tried to send command without subscribing to a server")
-			return
-		}
+	case "subscribe_docker_logs":
+		log.Info().Str("client_id", client.ServerID).Msg("Client subscribed to Docker logs")
+		ctx, cancel := context.WithCancel(context.Background())
 
-		payload, ok := msg.Payload.(map[string]interface{})
-		if !ok {
-			log.Warn().Interface("payload", msg.Payload).Msg("Invalid payload for send_command")
-			return
-		}
-		command, ok := payload["command"].(string)
-		if !ok {
-			log.Warn().Interface("payload", payload).Msg("Invalid command in payload")
-			return
-		}
+		h.mu.Lock()
+		h.logStreamCancels[client] = cancel
+		h.mu.Unlock()
 
-		if _, err := h.serverService.SendCommandToServer(client.ServerID, command); err != nil {
-			log.Error().Err(err).Str("server_id", client.ServerID).Str("command", command).Msg("Failed to send command to server")
-			// Optionally, send an error message back to the client
+		go h.serverService.StreamServerLogs(ctx, client.ServerID, client.Send)
+
+	case "unsubscribe_docker_logs":
+		log.Info().Str("client_id", client.ServerID).Msg("Client unsubscribed from Docker logs")
+		h.mu.Lock()
+		if cancel, ok := h.logStreamCancels[client]; ok {
+			cancel()
+			delete(h.logStreamCancels, client)
 		}
+		h.mu.Unlock()
+
+	case "send_rcon_command":
+		h.executeCommand(client, msg, "rcon")
+
+	case "send_terminal_command":
+		h.executeCommand(client, msg, "terminal")
+
 	default:
 		log.Warn().Str("action", msg.Action).Msg("Unknown websocket action received")
+		client.Send <- ws.NewErrorMessage("Unknown action: " + msg.Action)
 	}
+}
+
+// executeCommand is a helper to reduce code duplication for rcon and terminal commands.
+func (h *WebSocketHandler) executeCommand(client *ws.Client, msg ws.Message, source string) {
+	payload, ok := msg.Payload.(map[string]interface{})
+	if !ok {
+		client.Send <- ws.NewErrorMessage("Invalid payload for command")
+		return
+	}
+	command, ok := payload["command"].(string)
+	if !ok || command == "" {
+		client.Send <- ws.NewErrorMessage("Invalid or empty command in payload")
+		return
+	}
+
+	var response string
+	var err error
+
+	// Create a context with a timeout for the command execution.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if source == "rcon" {
+		response, err = h.serverService.SendCommandToServer(client.ServerID, command)
+	} else if source == "terminal" {
+		response, err = h.serverService.ExecuteTerminalCommand(ctx, client.ServerID, command)
+	}
+
+	if err != nil {
+		log.Error().Err(err).Str("server_id", client.ServerID).Str("command", command).Msg("Failed to execute command")
+		client.Send <- ws.NewErrorMessage(err.Error())
+		return
+	}
+
+	responseMsg := ws.NewConsoleOutputMessage(source, command, response)
+	client.Send <- responseMsg
 }

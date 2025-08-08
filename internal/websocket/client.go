@@ -44,7 +44,7 @@ type MessageHandler func(client *Client, message []byte)
 // ReadPump pumps messages from the websocket connection to be processed by the handler.
 func (c *Client) ReadPump(handler MessageHandler) {
 	defer func() {
-		c.hub.Unregister <- c
+		// c.hub.Unregister <- c // <-- REMOVE THIS LINE
 		c.conn.Close()
 	}()
 	c.conn.SetReadLimit(maxMessageSize)

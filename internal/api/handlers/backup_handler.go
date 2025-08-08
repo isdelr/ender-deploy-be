@@ -53,29 +53,21 @@ func (h *BackupHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Creating a backup can be a long-running task.
-	// We start it in a goroutine and return immediately.
 	go func() {
-		_, err := h.service.CreateBackup(serverID, payload.Name)
-		if err != nil {
-			// Log the error. In a real application, you might use a more robust
-			// system for notifying the user of background task failures.
-			// For now, we'll log it to the console.
-			// Note: We can't write an HTTP error response here because the
-			// original request has already completed.
+		if _, err := h.service.CreateBackup(serverID, payload.Name); err != nil {
 			log.Error().Err(err).Str("server_id", serverID).Str("backup_name", payload.Name).Msg("Failed to create backup in background")
 		}
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted) // 202 Accepted indicates the request is being processed.
+	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"message": "Backup creation started."})
 }
 
 // Delete handles the request to delete a backup.
 func (h *BackupHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	backupID := chi.URLParam(r, "backupId")
-	err := h.service.DeleteBackup(backupID)
-	if err != nil {
+	if err := h.service.DeleteBackup(backupID); err != nil {
 		log.Error().Err(err).Str("backup_id", backupID).Msg("Failed to delete backup")
 		http.Error(w, "Failed to delete backup: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -89,12 +81,12 @@ func (h *BackupHandler) Restore(w http.ResponseWriter, r *http.Request) {
 
 	// Restoring is a long-running, critical task. We run it in a goroutine.
 	go func() {
-		err := h.service.RestoreBackup(backupID)
-		if err != nil {
+		if err := h.service.RestoreBackup(backupID); err != nil {
 			log.Error().Err(err).Str("backup_id", backupID).Msg("Failed to restore backup in background")
 		}
 	}()
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"message": "Backup restoration started. The server will restart."})
 }

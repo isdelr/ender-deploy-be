@@ -50,10 +50,11 @@ func (h *UserHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
 	// Don't send password hash back
 	user.PasswordHash = ""
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(user)
 }
 
@@ -80,7 +81,6 @@ func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set Secure flag based on environment.
-	// In a real production setup, you would set APP_ENV=production.
 	isProd := os.Getenv("APP_ENV") == "production"
 
 	http.SetCookie(w, &http.Cookie{
@@ -88,15 +88,18 @@ func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Expires:  time.Now().Add(24 * time.Hour),
 		HttpOnly: true,
-		Secure:   isProd, // Set to true in production
+		Secure:   isProd,
 		SameSite: http.SameSiteStrictMode,
 		Path:     "/",
 	})
 
+	// sanitize user for response
+	user.PasswordHash = ""
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"token": token,
-		"user":  user, // Send back user info without sensitive data
+		"user":  user,
 	})
 }
 
@@ -115,6 +118,10 @@ func (h *UserHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
+
+	// sanitize
+	user.PasswordHash = ""
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(user)
 }
@@ -128,6 +135,10 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
+
+	// sanitize
+	user.PasswordHash = ""
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(user)
 }
@@ -150,9 +161,12 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to update user", http.StatusInternalServerError)
 		return
 	}
+
+	// sanitize
+	user.PasswordHash = ""
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(user)
-
 }
 
 // Delete handles the permanent deletion of a user account.
@@ -178,14 +192,13 @@ func (h *UserHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.service.UpdatePassword(id, payload.CurrentPassword, payload.NewPassword)
-	if err != nil {
+	if err := h.service.UpdatePassword(id, payload.CurrentPassword, payload.NewPassword); err != nil {
 		log.Error().Err(err).Str("user_id", id).Msg("Failed to change password")
 		http.Error(w, "Failed to change password: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"message": "Password updated successfully"})
-
 }

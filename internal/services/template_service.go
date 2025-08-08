@@ -3,15 +3,20 @@ package services
 import (
 	"database/sql"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/isdelr/ender-deploy-be/internal/models"
+	"github.com/rs/zerolog/log"
 )
 
 // TemplateServiceProvider defines the interface for template services.
 type TemplateServiceProvider interface {
 	GetAllTemplates() ([]models.Template, error)
 	GetTemplateByID(id string) (models.Template, error)
-	CreateTemplate(template models.Template) (models.Template, error)
+	CreateTemplate(template models.Template, serverExecutable string, file io.Reader) (models.Template, error)
 	UpdateTemplate(id string, template models.Template) (models.Template, error)
 	DeleteTemplate(id string) error
 }
@@ -21,21 +26,27 @@ type TemplateService struct {
 	db *sql.DB
 }
 
+const templateStoragePath = "./templates"
+
 // NewTemplateService creates a new TemplateService.
 func NewTemplateService(db *sql.DB) *TemplateService {
+	// Ensure the base directory for templates exists on service initialization.
+	if err := os.MkdirAll(templateStoragePath, 0755); err != nil {
+		log.Fatal().Err(err).Str("path", templateStoragePath).Msg("Failed to create base template data directory")
+	}
 	return &TemplateService{db: db}
 }
 
 // scanTemplate is a helper to scan a template from a row or rows object.
 func scanTemplate(scanner interface{ Scan(...interface{}) error }) (models.Template, error) {
 	var tmpl models.Template
-	var desc, modpackType, modpackURL, difficulty, iconURL sql.NullString
+	var desc, serverJarURL, startupCommand, difficulty, iconURL sql.NullString
 	var tags, jvm, props, mods, plugins, ops, whitelist sql.NullString
 	var datapacks, resourcePacks, bannedPlayers, bannedIPs sql.NullString
 
 	err := scanner.Scan(
 		&tmpl.ID, &tmpl.Name, &desc, &tmpl.MinecraftVersion,
-		&tmpl.JavaVersion, &tmpl.ServerType, &modpackType, &modpackURL,
+		&tmpl.JavaVersion, &tmpl.ServerType, &serverJarURL, &startupCommand,
 		&tmpl.MinMemoryMB, &tmpl.MaxMemoryMB, &difficulty, &iconURL,
 		&tags, &jvm, &props, &mods, &plugins, &ops, &whitelist,
 		&datapacks, &resourcePacks, &bannedPlayers, &bannedIPs,
@@ -47,8 +58,8 @@ func scanTemplate(scanner interface{ Scan(...interface{}) error }) (models.Templ
 
 	// Assign values from nullable types
 	tmpl.Description = desc.String
-	tmpl.ModpackType = modpackType.String
-	tmpl.ModpackURL = modpackURL.String
+	tmpl.ServerJarURL = serverJarURL.String
+	tmpl.StartupCommand = startupCommand.String
 	tmpl.Difficulty = difficulty.String
 	tmpl.IconURL = iconURL.String
 	tmpl.TagsJSON = tags.String
@@ -71,7 +82,7 @@ func scanTemplate(scanner interface{ Scan(...interface{}) error }) (models.Templ
 func (s *TemplateService) GetAllTemplates() ([]models.Template, error) {
 	const query = `
 		SELECT id, name, description, minecraft_version, java_version, server_type, 
-		       modpack_type, modpack_url, min_memory_mb, max_memory_mb, difficulty, icon_url,
+		       server_jar_url, startup_command, min_memory_mb, max_memory_mb, difficulty, icon_url,
 		       tags_json, jvm_args_json, properties_json, mods_json, plugins_json, ops_json, whitelist_json,
 			   datapacks_json, resource_packs_json, banned_players_json, banned_ips_json 
 		FROM templates`
@@ -96,7 +107,7 @@ func (s *TemplateService) GetAllTemplates() ([]models.Template, error) {
 func (s *TemplateService) GetTemplateByID(id string) (models.Template, error) {
 	const query = `
 		SELECT id, name, description, minecraft_version, java_version, server_type,
-		       modpack_type, modpack_url, min_memory_mb, max_memory_mb, difficulty, icon_url,
+		       server_jar_url, startup_command, min_memory_mb, max_memory_mb, difficulty, icon_url,
 		       tags_json, jvm_args_json, properties_json, mods_json, plugins_json, ops_json, whitelist_json,
 			   datapacks_json, resource_packs_json, banned_players_json, banned_ips_json 
 		FROM templates WHERE id = ?`
@@ -112,34 +123,73 @@ func (s *TemplateService) GetTemplateByID(id string) (models.Template, error) {
 	return tmpl, nil
 }
 
-// CreateTemplate adds a new template to the database.
-func (s *TemplateService) CreateTemplate(template models.Template) (models.Template, error) {
+// CreateTemplate adds a new template to the database from an uploaded file.
+func (s *TemplateService) CreateTemplate(template models.Template, serverExecutable string, file io.Reader) (models.Template, error) {
+	// Set MinMemory to the default value of 1GB
+	template.MinMemoryMB = 1024
+
+	// Generate startup command based on executable type
+	if strings.HasSuffix(strings.ToLower(serverExecutable), ".sh") {
+		template.StartupCommand = fmt.Sprintf("./%s", serverExecutable)
+	} else {
+		// Assume it's a jar file.
+		template.StartupCommand = fmt.Sprintf(
+			"java -Xmx%dM -Xms%dM -jar %s nogui",
+			template.MaxMemoryMB,
+			template.MinMemoryMB,
+			serverExecutable,
+		)
+	}
+
+	// Save the zip file to a persistent location
+	templateDir := filepath.Join(templateStoragePath, template.ID)
+	if err := os.MkdirAll(templateDir, 0755); err != nil {
+		return models.Template{}, fmt.Errorf("could not create template directory: %w", err)
+	}
+	zipFilePath := filepath.Join(templateDir, "template.zip")
+
+	outFile, err := os.Create(zipFilePath)
+	if err != nil {
+		return models.Template{}, fmt.Errorf("could not create zip file for template: %w", err)
+	}
+	defer outFile.Close()
+
+	if _, err = io.Copy(outFile, file); err != nil {
+		return models.Template{}, fmt.Errorf("could not save zip file for template: %w", err)
+	}
+
+	// Repurpose ServerJarURL to store the local path to the zip file.
+	template.ServerJarURL = zipFilePath
+
+	// Save the template metadata to the database.
 	template.PrepareForSave()
 	const query = `
 		INSERT INTO templates(id, name, description, minecraft_version, java_version, server_type, 
-		                    modpack_type, modpack_url, min_memory_mb, max_memory_mb, difficulty, icon_url,
+		                    server_jar_url, startup_command, min_memory_mb, max_memory_mb, difficulty, icon_url,
 		                    tags_json, jvm_args_json, properties_json, mods_json, plugins_json, ops_json, whitelist_json,
 							datapacks_json, resource_packs_json, banned_players_json, banned_ips_json) 
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	stmt, err := s.db.Prepare(query)
 	if err != nil {
+		os.RemoveAll(templateDir) // Cleanup saved file on DB error
 		return models.Template{}, fmt.Errorf("failed to prepare statement: %w", err)
 	}
 	defer stmt.Close()
 
 	_, err = stmt.Exec(
 		template.ID, template.Name, template.Description, template.MinecraftVersion,
-		template.JavaVersion, template.ServerType, template.ModpackType, template.ModpackURL,
+		template.JavaVersion, template.ServerType, template.ServerJarURL, template.StartupCommand,
 		template.MinMemoryMB, template.MaxMemoryMB, template.Difficulty, template.IconURL,
 		template.TagsJSON, template.JVMArgsJSON, template.PropertiesJSON,
 		template.ModsJSON, template.PluginsJSON, template.OpsJSON, template.WhitelistJSON,
 		template.DatapacksJSON, template.ResourcePacksJSON, template.BannedPlayersJSON, template.BannedIPsJSON,
 	)
 	if err != nil {
+		os.RemoveAll(templateDir) // Cleanup saved file on DB error
 		return models.Template{}, fmt.Errorf("failed to execute statement: %w", err)
 	}
 
-	return template, nil
+	return s.GetTemplateByID(template.ID)
 }
 
 // UpdateTemplate updates an existing template in the database.
@@ -147,7 +197,7 @@ func (s *TemplateService) UpdateTemplate(id string, template models.Template) (m
 	template.PrepareForSave()
 	const query = `
 		UPDATE templates SET name = ?, description = ?, minecraft_version = ?, java_version = ?, 
-		                    server_type = ?, modpack_type = ?, modpack_url = ?, 
+		                    server_type = ?, server_jar_url = ?, startup_command = ?,
 		                    min_memory_mb = ?, max_memory_mb = ?, difficulty = ?, icon_url = ?,
 		                    tags_json = ?, jvm_args_json = ?, properties_json = ?,
 		                    mods_json = ?, plugins_json = ?, ops_json = ?, whitelist_json = ?,
@@ -161,7 +211,7 @@ func (s *TemplateService) UpdateTemplate(id string, template models.Template) (m
 
 	_, err = stmt.Exec(
 		template.Name, template.Description, template.MinecraftVersion, template.JavaVersion,
-		template.ServerType, template.ModpackType, template.ModpackURL,
+		template.ServerType, template.ServerJarURL, template.StartupCommand,
 		template.MinMemoryMB, template.MaxMemoryMB, template.Difficulty, template.IconURL,
 		template.TagsJSON, template.JVMArgsJSON, template.PropertiesJSON,
 		template.ModsJSON, template.PluginsJSON, template.OpsJSON, template.WhitelistJSON,

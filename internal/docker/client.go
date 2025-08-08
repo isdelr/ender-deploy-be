@@ -122,3 +122,13 @@ func CalculateRAMPercent(stats *container.StatsResponse) float64 {
 	}
 	return 0.0
 }
+
+// ContainerExecCreate creates an execution instance in a container.
+func (c *Client) ContainerExecCreate(ctx context.Context, containerID string, config container.ExecOptions) (types.IDResponse, error) {
+	return c.cli.ContainerExecCreate(ctx, containerID, config)
+}
+
+// ContainerExecAttach attaches to an execution instance in a container.
+func (c *Client) ContainerExecAttach(ctx context.Context, execID string, config container.ExecAttachOptions) (types.HijackedResponse, error) {
+	return c.cli.ContainerExecAttach(ctx, execID, config)
+}

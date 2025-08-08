@@ -19,6 +19,7 @@ type Server struct {
 	IPAddress         string         `json:"ipAddress"`
 	Modpack           *ModpackInfo   `json:"modpack,omitempty"`
 	TemplateID        string         `json:"templateId,omitempty"`
+	MaxMemoryMB       int            `json:"maxMemoryMB"`
 	DockerContainerID string         `json:"-"` // Internal use, not exposed to client
 	RCONPassword      string         `json:"-"` // Internal use, added for server-specific RCON
 	DataPath          string         `json:"-"` // Internal use, not exposed to client

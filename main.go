@@ -10,14 +10,15 @@ import (
 	"time"
 
 	"github.com/isdelr/ender-deploy-be/internal/api"
+	"github.com/isdelr/ender-deploy-be/internal/auth"
 	"github.com/isdelr/ender-deploy-be/internal/config"
 	"github.com/isdelr/ender-deploy-be/internal/database"
 	"github.com/isdelr/ender-deploy-be/internal/docker"
-	"github.com/isdelr/ender-deploy-be/internal/logger" // Import the new logger package
+	"github.com/isdelr/ender-deploy-be/internal/logger"
 	"github.com/isdelr/ender-deploy-be/internal/monitoring"
 	"github.com/isdelr/ender-deploy-be/internal/services"
 	"github.com/isdelr/ender-deploy-be/internal/websocket"
-	"github.com/rs/zerolog/log" // Import zerolog's global logger
+	"github.com/rs/zerolog/log"
 )
 
 func main() {
@@ -29,6 +30,9 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to load configuration")
 	}
+
+	// Initialize JWT secret
+	auth.Init(cfg.JWTSecret)
 
 	// Ensure the base directory for server data exists
 	if err := os.MkdirAll(cfg.ServerDataBase, 0755); err != nil {
@@ -69,18 +73,17 @@ func main() {
 	backupService := services.NewBackupService(db, serverService, eventService, cfg.BackupPath)
 	scheduleService := services.NewScheduleService(db, eventService)
 
-	// Set up and run the background stats updater
+	// Background services
 	statUpdater := monitoring.NewStatUpdater(db, dockerClient, serverService, eventService)
 	go statUpdater.Run()
 
-	// Set up and run the background scheduler
 	scheduler := monitoring.NewScheduler(scheduleService, serverService, backupService, eventService)
 	go scheduler.Run()
 
-	// Set up router
+	// Router
 	router := api.NewRouter(hub, serverService, templateService, userService, backupService, eventService, scheduleService)
 
-	// Set up server
+	// HTTP server
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.ServerPort),
 		Handler: router,
@@ -99,8 +102,8 @@ func main() {
 	<-quit
 	log.Info().Msg("Shutting down server...")
 
-	statUpdater.Stop() // Stop the monitoring service
-	scheduler.Stop()   // Stop the scheduler
+	statUpdater.Stop()
+	scheduler.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

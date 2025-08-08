@@ -33,3 +33,4 @@ go.work.sum
 *.db
 /server-data
 /backups
+/templates

@@ -1,3 +1,4 @@
+// Path: ender-deploy-be/internal/services/backup_service.go
 package services
 
 import (
@@ -264,6 +265,14 @@ func (s *BackupService) RestoreBackup(backupID string) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	// After restoring, ensure the EULA is accepted to prevent startup issues.
+	eulaPath := filepath.Join(server.DataPath, "eula.txt")
+	if err := os.WriteFile(eulaPath, []byte("eula=true\n"), 0644); err != nil {
+		// Log a warning but don't fail the entire restore process for this.
+		// The server might still start if the EULA was already true in the backup.
+		log.Warn().Err(err).Str("server_id", server.ID).Msg("Failed to automatically accept EULA after restore.")
 	}
 
 	// Start the server again

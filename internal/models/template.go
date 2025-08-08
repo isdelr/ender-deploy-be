@@ -12,11 +12,11 @@ type Template struct {
 	MinecraftVersion string `json:"minecraftVersion"`
 	JavaVersion      string `json:"javaVersion"`
 	ServerType       string `json:"serverType"`
-	ModpackType      string `json:"modpackType,omitempty"` // e.g., "CURSEFORGE", "FTB"
-	ModpackURL       string `json:"modpackURL,omitempty"`  // URL to the modpack page or file
+	ServerJarURL     string `json:"serverJarURL,omitempty"` // URL to the server JAR file
+	StartupCommand   string `json:"startupCommand,omitempty"`
 	MinMemoryMB      int    `json:"minMemoryMB"`
 	MaxMemoryMB      int    `json:"maxMemoryMB"`
-	IconURL          string `json:"iconURL,omitempty"` // New
+	IconURL          string `json:"iconURL,omitempty"`
 
 	// New direct properties
 	Difficulty string `json:"difficulty,omitempty"`
@@ -29,10 +29,10 @@ type Template struct {
 	PluginsJSON       string `json:"-"`
 	OpsJSON           string `json:"-"`
 	WhitelistJSON     string `json:"-"`
-	DatapacksJSON     string `json:"-"` // New
-	ResourcePacksJSON string `json:"-"` // New
-	BannedPlayersJSON string `json:"-"` // New
-	BannedIPsJSON     string `json:"-"` // New
+	DatapacksJSON     string `json:"-"`
+	ResourcePacksJSON string `json:"-"`
+	BannedPlayersJSON string `json:"-"`
+	BannedIPsJSON     string `json:"-"`
 
 	// Slice/Map fields for API interaction
 	Tags          []string          `json:"tags,omitempty"`
@@ -42,10 +42,10 @@ type Template struct {
 	Plugins       []string          `json:"plugins,omitempty"`
 	Ops           []string          `json:"ops,omitempty"`
 	Whitelist     []string          `json:"whitelist,omitempty"`
-	Datapacks     []string          `json:"datapacks,omitempty"`     // New
-	ResourcePacks []string          `json:"resourcePacks,omitempty"` // New
-	BannedPlayers []string          `json:"bannedPlayers,omitempty"` // New
-	BannedIPs     []string          `json:"bannedIPs,omitempty"`     // New
+	Datapacks     []string          `json:"datapacks,omitempty"`
+	ResourcePacks []string          `json:"resourcePacks,omitempty"`
+	BannedPlayers []string          `json:"bannedPlayers,omitempty"`
+	BannedIPs     []string          `json:"bannedIPs,omitempty"`
 }
 
 // PrepareForSave marshals all slice/map fields into their respective JSON strings for DB storage.

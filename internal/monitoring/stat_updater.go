@@ -1,3 +1,4 @@
+// Path: ender-deploy-be/internal/monitoring/stat_updater.go
 package monitoring
 
 import (
@@ -109,8 +110,11 @@ func (su *StatUpdater) updateSingleServer(server *models.Server) {
 			return // <-- THE KEY FIX
 		}
 	} else {
-		// We got stats, so the container is online.
-		if server.Status != "online" {
+		// We got stats, so the container is running.
+		// The RCON poller handles the transition from 'starting' to 'online'.
+		// The stat updater should not interfere. It only corrects from 'offline' if a desync is found.
+		if server.Status == "offline" {
+			log.Warn().Str("server_name", server.Name).Str("server_id", server.ID).Msg("StatUpdater: Container is running but status was 'offline'. Correcting status to 'online'. This bypasses startup readiness check.")
 			server.Status = "online"
 		}
 		server.Resources.CPU = docker.CalculateCPUPercent(stats)

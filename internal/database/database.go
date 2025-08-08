@@ -28,12 +28,12 @@ func Migrate(db *sql.DB) error {
 		minecraft_version TEXT,
 		java_version TEXT,
 		server_type TEXT, -- e.g. Vanilla, Forge, Fabric
-		modpack_type TEXT,
-		modpack_url TEXT,
+		server_jar_url TEXT,
+		startup_command TEXT,
 		min_memory_mb INTEGER,
 		max_memory_mb INTEGER,
 		difficulty TEXT,
-		icon_url TEXT, -- New
+		icon_url TEXT,
 		-- Store complex fields as JSON text
 		tags_json TEXT,
 		jvm_args_json TEXT,
@@ -42,10 +42,10 @@ func Migrate(db *sql.DB) error {
 		plugins_json TEXT,
 		ops_json TEXT,
 		whitelist_json TEXT,
-		datapacks_json TEXT, -- New
-		resource_packs_json TEXT, -- New
-		banned_players_json TEXT, -- New
-		banned_ips_json TEXT, -- New
+		datapacks_json TEXT,
+		resource_packs_json TEXT,
+		banned_players_json TEXT,
+		banned_ips_json TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -68,6 +68,7 @@ func Migrate(db *sql.DB) error {
 		data_path TEXT,
 		rcon_password TEXT,
 		template_id TEXT,
+		max_memory_mb INTEGER,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY(template_id) REFERENCES templates(id)
 	);

@@ -1,9 +1,12 @@
+// Path: ender-deploy-be/internal/api/handlers/server_handler.go
 package handlers
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/isdelr/ender-deploy-be/internal/models"
@@ -115,7 +118,7 @@ func (h *ServerHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
-		http.Error(w, "The uploaded file is too big. Please choose an file that's less than 500MB in size.", http.StatusBadRequest)
+		http.Error(w, "The uploaded file is too big. Please choose a file that's less than 500MB in size.", http.StatusBadRequest)
 		return
 	}
 
@@ -130,14 +133,15 @@ func (h *ServerHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	// Retrieve other form fields
 	serverName := r.FormValue("name")
 	javaVersion := r.FormValue("javaVersion")
+	serverExecutable := r.FormValue("serverExecutable") // The new field for the JAR name
 	maxMemoryMB, _ := strconv.Atoi(r.FormValue("maxMemoryMB"))
 
-	if serverName == "" || javaVersion == "" || maxMemoryMB <= 0 {
-		http.Error(w, "Missing required fields: name, javaVersion, maxMemoryMB", http.StatusBadRequest)
+	if serverName == "" || javaVersion == "" || maxMemoryMB <= 0 || serverExecutable == "" {
+		http.Error(w, "Missing required fields: name, javaVersion, maxMemoryMB, serverExecutable", http.StatusBadRequest)
 		return
 	}
 
-	newServer, err := h.service.CreateServerFromUpload(serverName, javaVersion, maxMemoryMB, file)
+	newServer, err := h.service.CreateServerFromUpload(serverName, javaVersion, serverExecutable, maxMemoryMB, file)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create server from upload")
 		http.Error(w, "Failed to create server: "+err.Error(), http.StatusInternalServerError)
@@ -147,6 +151,48 @@ func (h *ServerHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(newServer)
+}
+
+// ListZipContents handles the request to list executable files from an uploaded zip.
+func (h *ServerHandler) ListZipContents(w http.ResponseWriter, r *http.Request) {
+	// A smaller max size for inspection is fine, as we only need the file list.
+	const maxInspectSize = 500 * 1024 * 1024
+	r.Body = http.MaxBytesReader(w, r.Body, maxInspectSize)
+
+	if err := r.ParseMultipartForm(maxInspectSize); err != nil {
+		http.Error(w, "The uploaded file is too big for inspection.", http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "Invalid file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	zipReader, err := zip.NewReader(file, header.Size)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to read zip archive for inspection")
+		http.Error(w, "Could not read zip archive: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var executableFiles []string
+	for _, f := range zipReader.File {
+		// Ignore directories and common metadata folders like __MACOSX
+		if f.FileInfo().IsDir() || strings.HasPrefix(f.Name, "__MACOSX/") || strings.HasPrefix(f.Name, "mods/") || strings.HasPrefix(f.Name, "libraries/") || strings.HasPrefix(f.Name, "plugins/") {
+			continue
+		}
+
+		// Check for .jar or .sh files
+		if strings.HasSuffix(strings.ToLower(f.Name), ".jar") || strings.HasSuffix(strings.ToLower(f.Name), ".sh") {
+			executableFiles = append(executableFiles, f.Name)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(executableFiles)
 }
 
 // PerformAction handles state-changing actions like start, stop, restart.
@@ -381,4 +427,17 @@ func (h *ServerHandler) BindPort(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]int{"port": port})
+}
+
+// GetSystemResourceStats provides information about the host system's RAM.
+func (h *ServerHandler) GetSystemResourceStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.service.GetSystemResourceStats()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to retrieve system resource stats")
+		http.Error(w, "Failed to retrieve system stats: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
 }
